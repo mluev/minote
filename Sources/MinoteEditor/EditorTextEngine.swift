@@ -281,6 +281,24 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         return markup.line.location
     }
 
+    /// Return continues a list or quote (or ends it on an empty item), but
+    /// not inside a code block. Nil means an ordinary line break.
+    public func newlineEdit(for selection: NSRange) -> TextEdit? {
+        guard let storage else { return nil }
+        let text = storage.mutableString
+        guard !isInsideFence(selection.location, in: text) else { return nil }
+        return MarkdownEditing.newline(in: text, selection: selection)
+    }
+
+    /// Tab and Shift-Tab indent and outdent list items, but not inside a code
+    /// block. Nil means an ordinary tab.
+    public func listShiftEdit(for selection: NSRange, outdent: Bool) -> TextEdit? {
+        guard let storage else { return nil }
+        let text = storage.mutableString
+        guard !isInsideFence(selection.location, in: text) else { return nil }
+        return MarkdownEditing.shiftLines(in: text, selection: selection, outdent: outdent, listsOnly: true)
+    }
+
     /// Backspace right after hidden block markup removes it as one unit.
     public func markupDeletion(for selection: NSRange) -> TextEdit? {
         guard configuration.rendersMarkdown, !configuration.preview, let storage, storage.length > 0 else { return nil }

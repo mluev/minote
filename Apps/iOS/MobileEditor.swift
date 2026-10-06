@@ -148,8 +148,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     }
 
     private func shift(outdent: Bool) {
-        let text = textView.textStorage.mutableString
-        if let edit = MarkdownEditing.shiftLines(in: text, selection: textView.selectedRange, outdent: outdent, listsOnly: true) {
+        if let edit = engine.listShiftEdit(for: textView.selectedRange, outdent: outdent) {
             apply(edit)
         }
     }
@@ -173,7 +172,6 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
 
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         guard textView.markedTextRange == nil else { return true }
-        let string = textView.textStorage.mutableString
         // Backspace right after a bullet, task box, heading or quote marker
         // removes that markup, which the page doesn't show as text.
         let selection = textView.selectedRange
@@ -182,11 +180,11 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
             apply(edit)
             return false
         }
-        if text == "\n", let edit = MarkdownEditing.newline(in: string, selection: range) {
+        if text == "\n", let edit = engine.newlineEdit(for: range) {
             apply(edit)
             return false
         }
-        if text == "\t", let edit = MarkdownEditing.shiftLines(in: string, selection: range, outdent: false, listsOnly: true) {
+        if text == "\t", let edit = engine.listShiftEdit(for: range, outdent: false) {
             apply(edit)
             return false
         }

@@ -40,6 +40,15 @@ struct EditorTextEngineTests {
         #expect(code.markupDeletion(for: NSRange(location: 6, length: 0)) == nil)
     }
 
+    @Test func returnAndTabInsideCodeAreOrdinary() {
+        let (code, _) = engine("```\n- item\n```")
+        #expect(code.newlineEdit(for: NSRange(location: 10, length: 0)) == nil)
+        #expect(code.listShiftEdit(for: NSRange(location: 10, length: 0), outdent: false) == nil)
+        let (list, _) = engine("- item")
+        #expect(list.newlineEdit(for: NSRange(location: 6, length: 0))?.applied(to: "- item") == "- item\n- ")
+        #expect(list.listShiftEdit(for: NSRange(location: 6, length: 0), outdent: false)?.applied(to: "- item") == "  - item")
+    }
+
     @Test func previewNeitherRevealsNorEdits() {
         let (engine, storage) = engine("**bold** and - x", preview: true)
         engine.selectionDidChange(NSRange(location: 3, length: 0))

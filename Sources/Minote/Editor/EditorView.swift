@@ -357,6 +357,14 @@ extension EditorCoordinator: WriterTextViewInteraction {
         engine.markupDeletion(for: selection)
     }
 
+    func newlineEdit(for selection: NSRange) -> TextEdit? {
+        engine.newlineEdit(for: selection)
+    }
+
+    func listShiftEdit(for selection: NSRange, outdent: Bool) -> TextEdit? {
+        engine.listShiftEdit(for: selection, outdent: outdent)
+    }
+
     func taskBox(at point: CGPoint) -> Int? {
         engine.taskBox(at: point)
     }

@@ -13,6 +13,10 @@ protocol WriterTextViewInteraction: AnyObject {
     func markupLineStart(ifCaretAtHome location: Int) -> Int?
     /// Backspace that removes hidden block markup as one unit.
     func markupDeletion(for selection: NSRange) -> TextEdit?
+    /// Return that continues (or ends) a list or quote; nil for a plain line break.
+    func newlineEdit(for selection: NSRange) -> TextEdit?
+    /// Tab or Shift-Tab on list items; nil for a plain tab.
+    func listShiftEdit(for selection: NSRange, outdent: Bool) -> TextEdit?
     /// The line of the task box at a point in text container coordinates.
     func taskBox(at point: CGPoint) -> Int?
     /// The character of a link at a point in text container coordinates.
@@ -127,9 +131,7 @@ final class WriterTextView: NSTextView {
 
     /// Return continues lists and quotes; Return on an empty item ends them.
     override func insertNewline(_ sender: Any?) {
-        guard !hasMarkedText(), let text = textStorage?.mutableString,
-              let edit = MarkdownEditing.newline(in: text, selection: selectedRange())
-        else {
+        guard !hasMarkedText(), let edit = interaction?.newlineEdit(for: selectedRange()) else {
             super.insertNewline(sender)
             return
         }
@@ -138,9 +140,7 @@ final class WriterTextView: NSTextView {
 
     /// Tab and Shift-Tab indent and outdent list items.
     override func insertTab(_ sender: Any?) {
-        guard let text = textStorage?.mutableString,
-              let edit = MarkdownEditing.shiftLines(in: text, selection: selectedRange(), outdent: false, listsOnly: true)
-        else {
+        guard let edit = interaction?.listShiftEdit(for: selectedRange(), outdent: false) else {
             super.insertTab(sender)
             return
         }
@@ -186,9 +186,7 @@ final class WriterTextView: NSTextView {
     }
 
     override func insertBacktab(_ sender: Any?) {
-        guard let text = textStorage?.mutableString,
-              let edit = MarkdownEditing.shiftLines(in: text, selection: selectedRange(), outdent: true, listsOnly: true)
-        else {
+        guard let edit = interaction?.listShiftEdit(for: selectedRange(), outdent: true) else {
             super.insertBacktab(sender)
             return
         }
