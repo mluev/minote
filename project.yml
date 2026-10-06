@@ -1,0 +1,128 @@
+# Xcode project for App Store builds of the Mac and iOS apps.
+#
+#   xcodegen generate     # creates Minote.xcodeproj (not committed)
+#   open Minote.xcodeproj # set your Team, then Product ▸ Archive
+#
+# Both apps use the same Swift package (MinoteKit, MinoteEditor) as the
+# SwiftPM build in scripts/build-app.sh. Identity and version live in
+# Support/Minote.xcconfig.
+name: Minote
+
+options:
+  bundleIdPrefix: com.mlutfullaev
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+    iOS: "18.0"
+
+configFiles:
+  Debug: Support/Minote.xcconfig
+  Release: Support/Minote.xcconfig
+
+packages:
+  Minote:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""                 # set your Apple Developer Team ID
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Minote-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Minote
+      - path: Resources/Assets.xcassets
+      - path: Resources/Credits.rtf
+      - path: Resources/Fonts
+        type: folder
+        buildPhase: resources
+      - path: Support/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Support/container-migration.plist
+        buildPhase: resources
+    dependencies:
+      - package: Minote
+        product: MinoteKit
+      - package: Minote
+        product: MinoteEditor
+    settings:
+      base:
+        PRODUCT_NAME: Minote
+        INFOPLIST_FILE: Support/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Support/Minote-AppStore.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: YES
+        COMBINE_HIDPI_IMAGES: YES
+
+  Minote-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Apps/iOS
+      - path: Resources/Assets.xcassets
+      - path: Resources/Fonts
+        type: folder
+        buildPhase: resources
+      - path: Support/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    dependencies:
+      - package: Minote
+        product: MinoteKit
+      - package: Minote
+        product: MinoteEditor
+    settings:
+      base:
+        PRODUCT_NAME: Minote
+        PRODUCT_MODULE_NAME: MinoteMobile   # "Minote" is the Mac app's package target
+        INFOPLIST_FILE: Support/iOS-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Support/Minote-iOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+
+  # Interaction tests of the iOS editor with real taps and typing (simulator):
+  #   xcodebuild test -scheme Minote-iOS -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+  Minote-iOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/MinoteiOSUITests
+    dependencies:
+      - target: Minote-iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mlutfullaev.minote.uitests
+        TEST_TARGET_NAME: Minote-iOS
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+
+schemes:
+  Minote-macOS:
+    build:
+      targets:
+        Minote-macOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Minote-iOS:
+    build:
+      targets:
+        Minote-iOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - Minote-iOSUITests
+    archive:
+      config: Release

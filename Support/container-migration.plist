@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- First sandboxed launch: move notes written by pre-sandbox builds
+	     (~/Library/Application Support/Minote) into the app container. -->
+	<key>Move</key>
+	<array>
+		<string>${ApplicationSupport}/Minote</string>
+	</array>
+</dict>
+</plist>

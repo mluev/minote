@@ -1,0 +1,8 @@
+// Single source of truth for identity and version, read by Xcode (project.yml)
+// and by scripts/build-app.sh.
+PRODUCT_NAME = Minote
+PRODUCT_BUNDLE_IDENTIFIER = com.mlutfullaev.minote
+MARKETING_VERSION = 0.2.0
+CURRENT_PROJECT_VERSION = 2
+MACOSX_DEPLOYMENT_TARGET = 15.0
+IPHONEOS_DEPLOYMENT_TARGET = 18.0
