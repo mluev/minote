@@ -279,7 +279,7 @@ public actor NoteFileStore {
         let base = url.deletingPathExtension().lastPathComponent + " copy"
         let stem = NoteNaming.uniqueStem(base: base) { fileExists(stem: $0, ext: ext) }
         let destination = fileURL(stem: stem, ext: ext)
-        try fileManager.copyItem(at: url, to: destination)
+        try coordinate(writing: destination, options: .forReplacing) { try fileManager.copyItem(at: url, to: $0) }
         ExtendedAttributes.remove(named: Self.autoNameAttribute, at: destination)
         return destination
     }
@@ -300,7 +300,12 @@ public actor NoteFileStore {
         let base = (preferredName as NSString).deletingPathExtension
         let stem = NoteNaming.uniqueStem(base: base) { fileExists(stem: $0, ext: ext) }
         let destination = fileURL(stem: stem, ext: ext)
-        try fileManager.moveItem(at: trashedURL, to: destination)
+        if isUbiquitous, !fileManager.isUbiquitousItem(at: trashedURL) {
+            // A file enters iCloud Drive through the ubiquity API, not a plain move.
+            try fileManager.setUbiquitous(true, itemAt: trashedURL, destinationURL: destination)
+        } else {
+            try coordinate(moving: trashedURL, to: destination) { try fileManager.moveItem(at: $0, to: $1) }
+        }
         // An auto-named file that had to take a new name stays auto-named.
         if stem != base,
            let tag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: destination),
@@ -358,9 +363,11 @@ public actor NoteFileStore {
         for version in conflicts {
             let base = url.deletingPathExtension().lastPathComponent + " (conflict)"
             let stem = NoteNaming.uniqueStem(base: base) { fileExists(stem: $0, ext: ext) }
+            let destination = fileURL(stem: stem, ext: ext)
+            let source = version.url
             do {
-                try fileManager.copyItem(at: version.url, to: fileURL(stem: stem, ext: ext))
-                ExtendedAttributes.remove(named: Self.autoNameAttribute, at: fileURL(stem: stem, ext: ext))
+                try coordinate(writing: destination, options: .forReplacing) { try fileManager.copyItem(at: source, to: $0) }
+                ExtendedAttributes.remove(named: Self.autoNameAttribute, at: destination)
                 version.isResolved = true
             } catch {
                 keptAll = false
