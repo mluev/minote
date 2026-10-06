@@ -98,6 +98,11 @@ struct MarkdownEditingTests {
         #expect(run("|") { MarkdownEditing.toggleCodeBlock(in: $0, selection: $1) } == "```\n|\n```")
     }
 
+    @Test func codeBlockOnSelectedBlankLinesKeepsTheLineBreak() {
+        #expect(run("a\n[   \n]b") { MarkdownEditing.toggleCodeBlock(in: $0, selection: $1) } == "a\n```\n|\n```\nb")
+        #expect(run("a\n|\nb") { MarkdownEditing.toggleCodeBlock(in: $0, selection: $1) } == "a\n```\n|\n```\nb")
+    }
+
     @Test func horizontalRule() {
         #expect(run("text|") { MarkdownEditing.insertHorizontalRule(in: $0, selection: $1) } == "text\n\n---\n|")
         #expect(run("a\n|") { MarkdownEditing.insertHorizontalRule(in: $0, selection: $1) } == "a\n---|")

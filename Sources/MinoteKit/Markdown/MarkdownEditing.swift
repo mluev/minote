@@ -204,8 +204,9 @@ public enum MarkdownEditing {
         }
         let content = text.substring(with: block)
         if content.isBlank {
-            let replacement = TextReplacement(selection.length == 0 ? NSRange(location: block.location, length: (content as NSString).length - (content.hasSuffix("\n") ? 1 : 0)) : block, "```\n\n```")
-            return TextEdit([replacement], selection: NSRange(location: block.location + 4, length: 0))
+            // Blank lines become an empty block; the line break after them stays.
+            let replaced = NSRange(location: block.location, length: (content as NSString).length - (content.hasSuffix("\n") ? 1 : 0))
+            return TextEdit([TextReplacement(replaced, "```\n\n```")], selection: NSRange(location: block.location + 4, length: 0))
         }
         let endsWithNewline = content.hasSuffix("\n")
         let replacements = [
