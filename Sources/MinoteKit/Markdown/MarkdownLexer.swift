@@ -88,13 +88,6 @@ public struct MarkdownLine: Equatable, Sendable {
     /// How many `>` a quote line starts with.
     public var quoteDepth: Int = 0
     public var links: [MarkdownLink] = []
-
-    /// Width in characters of block markup that hangs into the left margin
-    /// (heading hashes and the space after them).
-    public var hangingMarkerLength: Int {
-        if case .heading = kind { return contentStart }
-        return 0
-    }
 }
 
 /// A fast, line-at-a-time Markdown lexer for styling text while it's typed.

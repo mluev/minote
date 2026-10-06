@@ -470,10 +470,6 @@ public final class MarkdownStyler {
         }
     }
 
-    private func width(of text: String, in font: PlatformFont) -> CGFloat {
-        (text.replacingOccurrences(of: "\t", with: "    ") as NSString).size(withAttributes: [.font: font]).width
-    }
-
     private static func italic(_ font: PlatformFont) -> PlatformFont {
         #if os(macOS)
         let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.italic))

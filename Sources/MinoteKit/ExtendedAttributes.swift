@@ -30,18 +30,4 @@ public enum ExtendedAttributes {
             _ = removexattr(path, name, XATTR_NOFOLLOW)
         }
     }
-
-    public static func names(at url: URL) -> [String] {
-        url.withUnsafeFileSystemRepresentation { path -> [String] in
-            guard let path else { return [] }
-            let size = listxattr(path, nil, 0, XATTR_NOFOLLOW)
-            guard size > 0 else { return [] }
-            var buffer = [CChar](repeating: 0, count: size)
-            let read = listxattr(path, &buffer, size, XATTR_NOFOLLOW)
-            guard read > 0 else { return [] }
-            return buffer.prefix(read)
-                .split(separator: 0)
-                .map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
-        }
-    }
 }

@@ -92,11 +92,6 @@ public final class Library {
         }
     }
 
-    /// True while anything is unsaved or being written.
-    public var hasPendingWork: Bool {
-        inFlight > 0 || !saveTimers.isEmpty || notes.contains(where: \.hasUnsavedChanges)
-    }
-
     @ObservationIgnored public private(set) weak var editor: (any NoteEditor)?
 
     @ObservationIgnored private var store: NoteFileStore

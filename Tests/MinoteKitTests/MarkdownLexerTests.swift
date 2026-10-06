@@ -23,7 +23,6 @@ struct MarkdownLexerTests {
         let line = MarkdownLexer.lex("## Hello world")
         #expect(line.kind == .heading(level: 2))
         #expect(line.contentStart == 3)
-        #expect(line.hangingMarkerLength == 3)
         #expect(describe("## Hello world") == ["syntax(## )"])
         #expect(describe("# Title #") == ["syntax(# )", "syntax(#)"])
         #expect(MarkdownLexer.lex("#hashtag").kind == .paragraph)
