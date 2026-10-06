@@ -59,15 +59,30 @@ struct MinoteMobileApp: App {
     /// Writes pending edits when the app leaves the screen. iOS may suspend the
     /// app right after, so the save runs inside a background task.
     private func saveInBackground() {
-        let application = UIApplication.shared
-        var taskID = UIBackgroundTaskIdentifier.invalid
-        taskID = application.beginBackgroundTask(withName: "Save notes") {
-            application.endBackgroundTask(taskID)
-        }
+        let task = BackgroundTask(named: "Save notes")
         Task {
             await library.saveNow()
-            application.endBackgroundTask(taskID)
+            task.end()
         }
+    }
+}
+
+/// Extra time to finish work after the app leaves the screen. Ended exactly
+/// once: by the work finishing or by iOS running out of patience.
+@MainActor
+private final class BackgroundTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init(named name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
 
