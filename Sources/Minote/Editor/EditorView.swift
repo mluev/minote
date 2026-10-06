@@ -63,9 +63,12 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     private let linkHint = LinkHintView()
 
     var configuration: EditorConfiguration { engine.configuration }
+
+    #if DEBUG
     /// What the link hint says (for interaction tests).
     var hoverDescription: String { linkHint.text }
     var linkHintFrame: String { "\(linkHint.frame) hidden \(linkHint.isHidden) alpha \(linkHint.alphaValue) super \(linkHint.superview.map { String(describing: type(of: $0)) } ?? "-")" }
+    #endif
 
     init(configuration: EditorConfiguration) {
         textView = WriterTextView(usingTextLayoutManager: true)
