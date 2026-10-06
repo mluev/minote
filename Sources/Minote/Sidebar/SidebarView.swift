@@ -63,6 +63,7 @@ struct SidebarView: View {
         Button("Rename…") {
             windowState.renaming = note
         }
+        .disabled(note.isBlankDraft)
         Button("Duplicate") {
             Task { await library.duplicate(note.id) }
         }

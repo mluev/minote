@@ -44,7 +44,7 @@ struct AppCommands: Commands {
             .keyboardShortcut("s", modifiers: [.command, .shift])
             .disabled(library.selectedNote?.isDraft ?? true)
             Button("Rename…") { windowState.renaming = library.selectedNote }
-                .disabled(library.selectedNote == nil)
+                .disabled(library.selectedNote?.isBlankDraft ?? true)
             Divider()
             Button("Show in Finder") { NoteActions.revealInFinder(library.selectedNote) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])

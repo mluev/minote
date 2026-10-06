@@ -29,6 +29,8 @@ public final class Note: Identifiable {
     @ObservationIgnored var savedRevision = 0
 
     public var isDraft: Bool { fileURL == nil }
+    /// A draft without a word yet: nothing to rename, duplicate or reveal.
+    public var isBlankDraft: Bool { isDraft && title.isEmpty }
     public var hasUnsavedChanges: Bool { revision != savedRevision }
 
     /// File name without extension, or nil for drafts.

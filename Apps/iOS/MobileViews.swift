@@ -92,6 +92,7 @@ struct NotesList: View {
     @ViewBuilder
     private func menu(for note: Note) -> some View {
         Button("Rename…", systemImage: "pencil") { state.renaming = note }
+            .disabled(note.isBlankDraft)
         Button("Duplicate", systemImage: "plus.square.on.square") {
             Task { await library.duplicate(note.id) }
         }
@@ -215,6 +216,7 @@ struct EditorScreen: View {
         if let note = library.selectedNote {
             Section {
                 Button("Rename…", systemImage: "pencil") { state.renaming = note }
+                    .disabled(note.isBlankDraft)
                 if let url = note.fileURL {
                     ShareLink(item: url)
                 }
