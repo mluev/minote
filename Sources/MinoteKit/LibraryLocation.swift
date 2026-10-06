@@ -1,7 +1,5 @@
 import Foundation
 
-/// Where the library folder lives. The single place to change when the
-/// library moves (e.g. into the iCloud container).
 /// Where the library lives.
 public enum LibraryStorage: String, Sendable {
     /// On this device only.
@@ -10,6 +8,16 @@ public enum LibraryStorage: String, Sendable {
     case iCloud
 }
 
+/// What a move between library folders left behind.
+public struct NoteMoveReport: Sendable {
+    public var moved = 0
+    /// Files that couldn't be moved (or, from iCloud, weren't downloaded in
+    /// time). They stay in the old folder, untouched.
+    public var leftBehind: [String] = []
+    public var firstError: String?
+}
+
+/// Where the library folder lives on each platform.
 public enum LibraryLocation {
     public static let iCloudContainerIdentifier = "iCloud.com.mlutfullaev.minote"
 
@@ -55,29 +63,81 @@ public enum LibraryLocation {
 
     /// Moves every note from one library folder to another, into or out of
     /// iCloud, through the system's ubiquity API. Never overwrites: a name
-    /// that's taken gets a number. Blocking: run off the main thread.
-    public static func moveNotes(from source: URL, to destination: URL, intoICloud: Bool) throws -> Int {
+    /// that's taken gets a number. A file that can't be moved stays where it
+    /// was and the rest still move. Notes in iCloud that aren't on this device
+    /// yet are downloaded first (waiting up to `downloadTimeout`).
+    /// Makes blocking file system calls: run it off the main actor.
+    public static func moveNotes(from source: URL, to destination: URL, intoICloud: Bool,
+                                 downloadTimeout: Duration = .seconds(30)) async throws -> NoteMoveReport {
         let manager = FileManager.default
         try manager.createDirectory(at: destination, withIntermediateDirectories: true)
-        let files = try manager.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
-            .filter { NoteNaming.isNoteFile($0) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
-        var moved = 0
+        var report = NoteMoveReport()
+        var files = noteFiles(in: source)
+        let pending = files.filter { !isDownloaded($0) }
+        if !pending.isEmpty {
+            for file in pending { try? manager.startDownloadingUbiquitousItem(at: file) }
+            let deadline = ContinuousClock.now.advanced(by: downloadTimeout)
+            while ContinuousClock.now < deadline, !pending.allSatisfy(isDownloaded) {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            for file in pending where !isDownloaded(file) {
+                report.leftBehind.append(file.lastPathComponent)
+                files.removeAll { $0 == file }
+            }
+        }
         for file in files {
             let ext = file.pathExtension
             let stem = NoteNaming.uniqueStem(base: file.deletingPathExtension().lastPathComponent) {
                 manager.fileExists(atPath: destination.appendingPathComponent("\($0).\(ext)").path)
             }
             let target = destination.appendingPathComponent("\(stem).\(ext)")
-            if intoICloud {
-                try manager.setUbiquitous(true, itemAt: file, destinationURL: target)
-            } else if manager.isUbiquitousItem(at: file) {
-                try manager.setUbiquitous(false, itemAt: file, destinationURL: target)
-            } else {
-                try manager.moveItem(at: file, to: target)
+            do {
+                if intoICloud {
+                    try manager.setUbiquitous(true, itemAt: file, destinationURL: target)
+                } else if manager.isUbiquitousItem(at: file) {
+                    try manager.setUbiquitous(false, itemAt: file, destinationURL: target)
+                } else {
+                    try manager.moveItem(at: file, to: target)
+                }
+                report.moved += 1
+            } catch {
+                report.leftBehind.append(file.lastPathComponent)
+                report.firstError = report.firstError ?? error.localizedDescription
             }
-            moved += 1
         }
-        return moved
+        return report
+    }
+
+    /// The note files in a folder, including iCloud notes that are only
+    /// placeholders (".Name.md.icloud") on this device, by their real names.
+    static func noteFiles(in directory: URL) -> [URL] {
+        let manager = FileManager.default
+        guard let entries = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        var files: [URL] = []
+        for entry in entries {
+            var name = entry.lastPathComponent
+            if name.hasPrefix(".") {
+                guard name.hasSuffix(".icloud") else { continue }
+                name = String(name.dropFirst().dropLast(".icloud".count))
+                let file = directory.appendingPathComponent(name, isDirectory: false)
+                if NoteNaming.isNoteFile(file) { files.append(file) }
+                continue
+            }
+            guard NoteNaming.isNoteFile(entry),
+                  (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            files.append(entry)
+        }
+        return files
+    }
+
+    /// False only for an iCloud file whose contents aren't on this device.
+    private static func isDownloaded(_ url: URL) -> Bool {
+        let fresh = URL(fileURLWithPath: url.path)
+        guard let values = try? fresh.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+              values.isUbiquitousItem == true else {
+            return FileManager.default.fileExists(atPath: url.path)
+        }
+        return values.ubiquitousItemDownloadingStatus == .current || values.ubiquitousItemDownloadingStatus == .downloaded
     }
 }
 

@@ -36,11 +36,21 @@ public final class LibraryStorageSwitcher {
     public func open() async {
         let iCloud = await LibraryLocation.resolveICloudDirectory()
         isICloudAvailable = iCloud != nil
-        if defaults.string(forKey: Self.preferenceKey) == LibraryStorage.iCloud.rawValue, let iCloud {
-            await library.relocate(to: makeStore(iCloud, true), watcher: makeWatcher(iCloud), movingNotes: false)
-        } else {
+        guard defaults.string(forKey: Self.preferenceKey) == LibraryStorage.iCloud.rawValue else {
             await library.load()
+            return
         }
+        guard let iCloud else {
+            await library.load()
+            library.presentedError = LibraryError(
+                title: "iCloud Drive is unavailable",
+                message: "Minote is showing the notes on this device. Your notes in iCloud Drive will be back when iCloud Drive is, and notes you write meanwhile will move there."
+            )
+            return
+        }
+        // Notes written on this device while iCloud was unavailable join the others.
+        let strandedLocally = !LibraryLocation.noteFiles(in: library.directory).isEmpty
+        await library.relocate(to: makeStore(iCloud, true), watcher: makeWatcher(iCloud), movingNotes: strandedLocally)
     }
 
     /// Moves every note into iCloud Drive or back to this device.

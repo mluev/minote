@@ -172,15 +172,25 @@ public final class Library {
             await waitUntilIdle()
             watcher?.stop()
         }
+        var problem: LibraryError?
         if movingNotes {
             let destination = newStore.directory
             let intoICloud = newStore.isUbiquitous
             do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    try LibraryLocation.moveNotes(from: oldDirectory, to: destination, intoICloud: intoICloud)
+                let moved = try await Task.detached(priority: .userInitiated) {
+                    try await LibraryLocation.moveNotes(from: oldDirectory, to: destination, intoICloud: intoICloud)
                 }.value
+                if !moved.leftBehind.isEmpty {
+                    let names = moved.leftBehind.prefix(5).map { "“\($0)”" }.joined(separator: ", ")
+                    let more = moved.leftBehind.count > 5 ? " and \(moved.leftBehind.count - 5) more" : ""
+                    problem = LibraryError(
+                        title: "Couldn't move every note",
+                        message: "\(names)\(more) stayed where they were. They're safe: switch back to see them, or try again later."
+                            + (moved.firstError.map { "\n\n\($0)" } ?? "")
+                    )
+                }
             } catch {
-                report("Couldn't move every note", error)
+                problem = LibraryError(title: "Couldn't move the notes", message: error.localizedDescription)
             }
         }
         notes.removeAll()
@@ -189,6 +199,10 @@ public final class Library {
         isLoaded = false
         isTerminating = false
         await load()
+        if let problem {
+            logger.error("\(problem.title, privacy: .public): \(problem.message, privacy: .public)")
+            presentedError = problem
+        }
     }
 
     // MARK: Editor
