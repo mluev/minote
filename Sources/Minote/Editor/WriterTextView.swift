@@ -193,6 +193,17 @@ final class WriterTextView: NSTextView {
         apply(edit, actionName: nil)
     }
 
+    /// Runs a Format menu action on the selection.
+    func perform(_ action: FormatAction) {
+        guard isEditable, let text = textStorage?.mutableString else { return }
+        let clipboard = NSPasteboard.general.string(forType: .string)
+        guard let edit = action.edit(in: text, selection: selectedRange(), clipboard: clipboard) else {
+            NSSound.beep()
+            return
+        }
+        apply(edit, actionName: action.title)
+    }
+
     /// Applies an edit as a single undoable change.
     func apply(_ edit: TextEdit, actionName: String?) {
         guard let storage = textStorage else { return }
