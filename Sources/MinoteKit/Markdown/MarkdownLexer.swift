@@ -589,6 +589,17 @@ private struct LineLexer {
         }
         guard delimiters.count > 1 else { return }
 
+        // CommonMark's delimiter stack as links between array slots, so matched
+        // or used-up delimiters drop out, and "openers_bottom": where the search
+        // for an opener may stop because nothing below can match. Together they
+        // keep long lines full of `*` and `_` (pasted data, minified code) linear.
+        var previous = Array(-1..<(delimiters.count - 1))
+        var bottoms = [Int](repeating: -1, count: 18)
+        func bottomKey(_ closer: Delimiter) -> Int {
+            let kind = closer.char == .asterisk ? 0 : closer.char == .underscore ? 1 : 2
+            return kind * 6 + (closer.canOpen ? 3 : 0) + closer.originalLength % 3
+        }
+
         var closerIndex = 0
         while closerIndex < delimiters.count {
             let closer = delimiters[closerIndex]
@@ -596,9 +607,10 @@ private struct LineLexer {
                 closerIndex += 1
                 continue
             }
+            let key = bottomKey(closer)
             var match: Int?
-            var openerIndex = closerIndex - 1
-            while openerIndex >= 0 {
+            var openerIndex = previous[closerIndex]
+            while openerIndex > bottoms[key] {
                 let opener = delimiters[openerIndex]
                 if opener.char == closer.char, opener.canOpen, opener.length > 0 {
                     if closer.char == .tilde {
@@ -615,10 +627,15 @@ private struct LineLexer {
                         }
                     }
                 }
-                openerIndex -= 1
+                openerIndex = previous[openerIndex]
             }
 
             guard let openerIndex = match else {
+                bottoms[key] = previous[closerIndex]
+                // A closer that can't open is of no further use.
+                if !closer.canOpen, closerIndex + 1 < delimiters.count {
+                    previous[closerIndex + 1] = previous[closerIndex]
+                }
                 closerIndex += 1
                 continue
             }
@@ -647,9 +664,13 @@ private struct LineLexer {
             current.length -= use
             delimiters[openerIndex] = opener
             delimiters[closerIndex] = current
-            // Delimiters between a matched pair can no longer match anything.
-            for between in (openerIndex + 1)..<closerIndex { delimiters[between].length = 0 }
-            if current.length == 0 { closerIndex += 1 }
+            // Delimiters between a matched pair can no longer match anything;
+            // a used-up opener or closer neither.
+            previous[closerIndex] = opener.length > 0 ? openerIndex : previous[openerIndex]
+            if current.length == 0 {
+                if closerIndex + 1 < delimiters.count { previous[closerIndex + 1] = previous[closerIndex] }
+                closerIndex += 1
+            }
         }
     }
 

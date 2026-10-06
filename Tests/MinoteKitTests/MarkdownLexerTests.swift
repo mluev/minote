@@ -102,6 +102,22 @@ struct MarkdownLexerTests {
         #expect(describe(input) == expected)
     }
 
+    @Test func longLinesFullOfDelimitersStayFast() {
+        // Pasted data and minified code: thousands of delimiters on one line
+        // once took quadratic time on every keystroke.
+        let lines = [
+            String(repeating: "a* ", count: 20_000),
+            String(repeating: "*a ", count: 20_000),
+            String(repeating: "_x *y ", count: 10_000) + String(repeating: "z* ", count: 10_000),
+        ]
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            for line in lines { _ = MarkdownLexer.lex(line) }
+        }
+        #expect(elapsed < .seconds(2))
+        #expect(describe("*a* " + String(repeating: "b* ", count: 1_000)).prefix(3) == ["syntax(*)", "emphasis(a)", "syntax(*)"])
+    }
+
     @Test func nestedEmphasis() {
         let spans = describe("***both***")
         #expect(spans.contains("strong(both)"))
