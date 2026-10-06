@@ -18,19 +18,7 @@ public struct FenceIndex: Sendable {
 
     /// Whether the character at `location` is inside a fenced block.
     public func contains(_ location: Int) -> Bool {
-        var low = 0, high = blocks.count - 1
-        while low <= high {
-            let mid = (low + high) / 2
-            let block = blocks[mid]
-            if location < block.location {
-                high = mid - 1
-            } else if location >= NSMaxRange(block) {
-                low = mid + 1
-            } else {
-                return true
-            }
-        }
-        return false
+        block(containing: location) != nil
     }
 
     /// The fenced block containing `location`, from its opening fence line.
