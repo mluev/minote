@@ -154,5 +154,9 @@ struct NoteFileStoreTests {
 
         #expect(try await store.readText(at: bom) == "hi")
         #expect(try await store.readText(at: latin) == "café")
+
+        let utf16 = library.notes.appendingPathComponent("utf16.md")
+        try "naïve – text".data(using: .utf16)!.write(to: utf16) // with a byte order mark
+        #expect(try await store.readText(at: utf16) == "naïve – text")
     }
 }

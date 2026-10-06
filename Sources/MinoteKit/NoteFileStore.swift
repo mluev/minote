@@ -127,13 +127,17 @@ public actor NoteFileStore {
             if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
             return text
         }
-        var encoding = String.Encoding.utf8
-        if let text = try? String(contentsOf: url, usedEncoding: &encoding) {
-            return text
-        }
-        if let text = String(data: data, encoding: .windowsCP1252) {
-            return text
-        }
+        // Not UTF-8: let Foundation recognize UTF-16/32 (by their byte order
+        // marks) and legacy encodings, falling back to Windows Latin 1, which
+        // decodes any bytes. Saving writes UTF-8 from then on.
+        var converted: NSString?
+        let options: [StringEncodingDetectionOptionsKey: Any] = [
+            .suggestedEncodingsKey: [String.Encoding.utf16.rawValue, String.Encoding.windowsCP1252.rawValue],
+            .allowLossyKey: false,
+        ]
+        _ = NSString.stringEncoding(for: data, encodingOptions: options, convertedString: &converted, usedLossyConversion: nil)
+        if let converted { return converted as String }
+        if let text = String(data: data, encoding: .windowsCP1252) { return text }
         throw CocoaError(.fileReadInapplicableStringEncoding, userInfo: [NSURLErrorKey: url])
     }
 
