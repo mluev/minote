@@ -159,4 +159,14 @@ struct NoteFileStoreTests {
         try "naïve – text".data(using: .utf16)!.write(to: utf16) // with a byte order mark
         #expect(try await store.readText(at: utf16) == "naïve – text")
     }
+
+    @Test func backupsGoWhereTheAppSays() async throws {
+        let library = try TemporaryLibrary()
+        let backups = library.root.appendingPathComponent("Elsewhere", isDirectory: true)
+        let store = NoteFileStore(directory: library.notes, backupDirectory: backups)
+        try library.write("keep me", to: "Note.md")
+        _ = try await store.write("", to: library.notes.appendingPathComponent("Note.md"), autoNameTag: nil, noteID: UUID(), revision: 1)
+        let copies = try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil)
+        #expect(copies.count == 1)
+    }
 }

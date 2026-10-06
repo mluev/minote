@@ -22,13 +22,14 @@ struct MinoteMobileApp: App {
             try? seed.write(to: directory.appendingPathComponent("UI Test.md"), atomically: true, encoding: .utf8)
         }
         #endif
-        let store = NoteFileStore(directory: LibraryLocation.defaultDirectory(), trash: MobileTrash.moveToTrash)
+        let backups = LibraryLocation.backupDirectory()
+        let store = NoteFileStore(directory: LibraryLocation.defaultDirectory(), backupDirectory: backups, trash: MobileTrash.moveToTrash)
         let library = Library(store: store, watcher: DirectoryWatcher(directory: store.directory))
         _library = ViewState(initialValue: library)
         _storage = ViewState(initialValue: LibraryStorageSwitcher(
             library: library,
             makeStore: { directory, isUbiquitous in
-                NoteFileStore(directory: directory, isUbiquitous: isUbiquitous, trash: MobileTrash.moveToTrash)
+                NoteFileStore(directory: directory, isUbiquitous: isUbiquitous, backupDirectory: backups, trash: MobileTrash.moveToTrash)
             },
             makeWatcher: { DirectoryWatcher(directory: $0.standardizedFileURL.resolvingSymlinksInPath()) }
         ))

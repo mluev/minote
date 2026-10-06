@@ -21,12 +21,15 @@ struct MinoteApp: App {
             directory = directory.deletingLastPathComponent().appendingPathComponent("DriverNotes", isDirectory: true)
         }
         #endif
-        let store = NoteFileStore(directory: directory)
+        let backups = LibraryLocation.backupDirectory()
+        let store = NoteFileStore(directory: directory, backupDirectory: backups)
         let library = Library(store: store, watcher: FSEventsWatcher(directory: store.directory))
         _library = ViewState(initialValue: library)
         _storage = ViewState(initialValue: LibraryStorageSwitcher(
             library: library,
-            makeStore: { directory, isUbiquitous in NoteFileStore(directory: directory, isUbiquitous: isUbiquitous) },
+            makeStore: { directory, isUbiquitous in
+                NoteFileStore(directory: directory, isUbiquitous: isUbiquitous, backupDirectory: backups)
+            },
             makeWatcher: { FSEventsWatcher(directory: $0.standardizedFileURL.resolvingSymlinksInPath()) }
         ))
     }

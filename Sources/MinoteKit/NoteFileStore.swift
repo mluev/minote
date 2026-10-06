@@ -42,6 +42,8 @@ public actor NoteFileStore {
     /// iCloud folders need file coordination, placeholder downloads and
     /// conflict handling; local folders don't.
     public nonisolated let isUbiquitous: Bool
+    /// Where the previous contents of emptied notes are kept, just in case.
+    public nonisolated let backupDirectory: URL
 
     private let trashHandler: TrashHandler
     private var lastWrittenRevision: [UUID: Int] = [:]
@@ -49,12 +51,16 @@ public actor NoteFileStore {
 
     private var fileManager: FileManager { .default }
 
-    public init(directory: URL, isUbiquitous: Bool = false, trash: @escaping TrashHandler = NoteFileStore.moveToSystemTrash) {
+    /// `backupDirectory` defaults to a "Backups" folder next to the library folder.
+    public init(directory: URL, isUbiquitous: Bool = false, backupDirectory: URL? = nil,
+                trash: @escaping TrashHandler = NoteFileStore.moveToSystemTrash) {
         // Create first so symlinks such as /var → /private/var resolve and every URL
         // we build matches what directory listings return.
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directory = directory.standardizedFileURL.resolvingSymlinksInPath()
         self.isUbiquitous = isUbiquitous
+        self.backupDirectory = backupDirectory
+            ?? self.directory.deletingLastPathComponent().appendingPathComponent("Backups", isDirectory: true)
         self.trashHandler = trash
     }
 
@@ -192,11 +198,6 @@ public actor NoteFileStore {
             }
         }
         if status != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-    }
-
-    /// Where the previous contents of emptied notes are kept, just in case.
-    public nonisolated var backupDirectory: URL {
-        directory.deletingLastPathComponent().appendingPathComponent("Backups", isDirectory: true)
     }
 
     /// A note is about to be emptied: keep what it had. Emptying a note is

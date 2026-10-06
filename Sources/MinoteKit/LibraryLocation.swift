@@ -13,6 +13,14 @@ public enum LibraryStorage: String, Sendable {
 public enum LibraryLocation {
     public static let iCloudContainerIdentifier = "iCloud.com.mlutfullaev.minote"
 
+    /// Copies of emptied notes, on this device only (never synced, always
+    /// writable, wherever the library itself lives).
+    public static func backupDirectory() -> URL {
+        URL.applicationSupportDirectory
+            .appendingPathComponent("Minote", isDirectory: true)
+            .appendingPathComponent("Backups", isDirectory: true)
+    }
+
     /// macOS: `~/Library/Application Support/Minote/Notes` (inside the app's
     /// sandbox container), like iA Writer's "On My Mac".
     /// iOS: the app's Documents folder, which the Files app shows as
