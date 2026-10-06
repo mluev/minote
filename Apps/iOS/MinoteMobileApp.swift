@@ -46,7 +46,9 @@ struct MinoteMobileApp: App {
             case .background, .inactive:
                 saveInBackground()
             case .active:
-                Task { await library.rescanNow() }
+                // Catch up with changes made in the Files app meanwhile (once
+                // the library is open: at launch, opening does the first scan).
+                if library.isLoaded { Task { await library.rescanNow() } }
             @unknown default:
                 break
             }
