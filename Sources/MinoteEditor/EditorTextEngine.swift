@@ -338,10 +338,8 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             if case .footnote(let id) = target { return "Footnote \(id)" }
             guard let storage, location < storage.length else { return "Section in this note" }
             let line = storage.mutableString.lineRange(for: NSRange(location: location, length: 0))
-            let title = storage.mutableString.substring(with: line)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-                .trimmingCharacters(in: .whitespaces)
+            let text = storage.mutableString.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = MarkdownLinks.headingTitle(String(text.drop { $0 == "#" }))
             return "Section “\(title)”"
         case nil:
             switch target {

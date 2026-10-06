@@ -54,6 +54,15 @@ struct MarkdownRenderingSupportTests {
         #expect(MarkdownLinks.resolve(.footnote("n"), in: text) == .anchor(37))
     }
 
+    @Test func headingAnchorsIgnoreClosingHashes() {
+        let text = "## Setup ##\n\n### C#\n" as NSString
+        #expect(MarkdownLinks.resolve(.url("#setup"), in: text) == .anchor(0))
+        #expect(MarkdownLinks.resolve(.url("#c"), in: text) == .anchor(13))
+        #expect(MarkdownLinks.headingTitle("Title  ###  ") == "Title")
+        #expect(MarkdownLinks.headingTitle("C#") == "C#")
+        #expect(MarkdownLinks.headingTitle("##") == "")
+    }
+
     @Test func slugs() {
         #expect(MarkdownLinks.slug("Hello, World!") == "hello-world")
         #expect(MarkdownLinks.slug("Über 2 Things") == "über-2-things")

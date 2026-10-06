@@ -70,9 +70,19 @@ public enum MarkdownLinks {
             let parsed = MarkdownLexer.lex(line)
             guard case .heading = parsed.kind else { return false }
             let units = Array(line.utf16)
-            let title = String(decoding: units[parsed.contentStart...], as: UTF16.self)
-            return Self.slug(title) == slug
+            return Self.slug(headingTitle(String(decoding: units[parsed.contentStart...], as: UTF16.self))) == slug
         }
+    }
+
+    /// A heading's text without its optional closing `##` sequence.
+    public static func headingTitle(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let withoutHashes = trimmed.reversed().drop { $0 == "#" }
+        guard withoutHashes.count < trimmed.count else { return trimmed }
+        if withoutHashes.isEmpty { return "" }
+        // "C#" keeps its hash: a closing sequence follows a space.
+        guard withoutHashes.first == " " || withoutHashes.first == "\t" else { return trimmed }
+        return String(withoutHashes.reversed()).trimmingCharacters(in: .whitespaces)
     }
 
     public static func slug(_ title: String) -> String {
