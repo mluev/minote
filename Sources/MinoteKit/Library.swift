@@ -292,7 +292,12 @@ public final class Library {
     /// keeps that name instead of following its first line.
     public func rename(_ id: Note.ID, to newName: String) async {
         guard let note = note(with: id) else { return }
-        let stem = NoteNaming.fileStem(forTitle: newName)
+        // "Ideas.md" names the file Ideas.md, not Ideas.md.md.
+        var name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if NoteNaming.isNoteFile(URL(fileURLWithPath: name)), (name as NSString).deletingPathExtension.isEmpty == false {
+            name = (name as NSString).deletingPathExtension
+        }
+        let stem = NoteNaming.fileStem(forTitle: name)
         if note.isDraft {
             // Write the draft first so there's a file to name.
             await enqueue(id) { [weak self] in await self?.performSave(note, rename: .always) }.value

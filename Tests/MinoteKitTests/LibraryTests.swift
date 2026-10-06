@@ -208,6 +208,15 @@ struct LibraryTests {
         #expect(!note.isAutoNamed)
     }
 
+    @Test func renamingToANameWithAnExtensionDoesNotDoubleIt() async throws {
+        let folder = try TemporaryLibrary()
+        let (library, editor) = await makeLibrary(folder)
+        editor.type("Draft\nbody", in: library)
+        await library.waitUntilIdle()
+        await library.rename(try #require(library.selectedID), to: "Ideas.md")
+        #expect(folder.fileNames == ["Ideas.md"])
+    }
+
     @Test func emptiedNoteKeepsItsNameAndIsTrashedWhenLeft() async throws {
         let folder = try TemporaryLibrary()
         let (library, editor) = await makeLibrary(folder)
