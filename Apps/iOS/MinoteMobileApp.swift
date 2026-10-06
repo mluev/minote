@@ -91,7 +91,12 @@ private final class BackgroundTask {
 /// App-wide UI state shared by the list, the editor and the menus.
 @Observable
 final class MobileState {
-    var renaming: Note?
+    /// The note being renamed, if any. Starting a rename fills in its name.
+    var renaming: Note? {
+        didSet { if let renaming, renaming !== oldValue { renameText = renaming.fileStem ?? renaming.title } }
+    }
+    /// The Rename alert's text field.
+    var renameText = ""
     var statistics = TextStatistics(words: 0, characters: 0)
     var isEditorFocused = false
     /// Preview: the note is read, not edited.

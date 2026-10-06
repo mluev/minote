@@ -235,16 +235,14 @@ struct EditorScreen: View {
 /// The text field inside the Rename alert.
 struct RenameField: View {
     let library: Library
-    let state: MobileState
-    @ViewState private var name = ""
+    @Bindable var state: MobileState
 
     var body: some View {
-        TextField("Name", text: $name)
-            .onAppear { name = state.renaming?.fileStem ?? state.renaming?.title ?? "" }
+        TextField("Name", text: $state.renameText)
         Button("Cancel", role: .cancel) { state.renaming = nil }
         Button("Rename") {
-            guard let note = state.renaming, !name.isBlank else { return }
-            let newName = name
+            guard let note = state.renaming, !state.renameText.isBlank else { return }
+            let newName = state.renameText
             state.renaming = nil
             Task { await library.rename(note.id, to: newName) }
         }
