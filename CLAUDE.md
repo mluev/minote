@@ -19,10 +19,10 @@ xcodegen generate                    # Minote.xcodeproj for App Store archives (
 
 - `Sources/MinoteKit` — Foundation only, shared by every platform, fully unit-tested.
   - `Library` (`@MainActor @Observable`): notes, selection, drafts, debounced autosave, auto-naming, trash/undo, reconciling outside changes. All disk work for a note is serialized through `enqueue`.
-  - `NoteFileStore` (actor): scan, safe write (`replaceItemAt` + xattr copy), create, rename, trash. In iCloud (`isUbiquitous`): coordinated I/O, downloads `.icloud` placeholders, saves conflict versions as "(conflict)" notes. Emptying a non-empty note first copies it to `../Backups`.
-  - `LibraryStorageSwitcher`: opens the library locally or in iCloud Drive and moves notes between them (`setUbiquitous`).
+  - `NoteFileStore` (actor): scan, safe write (`replaceItemAt` + xattr copy), create, rename, trash. In iCloud (`isUbiquitous`): coordinated I/O, downloads `.icloud` placeholders, saves conflict versions as "(conflict)" notes. Emptying a non-empty note first copies it to `LibraryLocation.backupDirectory()` (Application Support/Minote/Backups, device-local, newest 50).
+  - `LibraryStorageSwitcher`: opens the library locally or in iCloud Drive and moves notes between them (`LibraryLocation.moveNotes`: `setUbiquitous`, downloads placeholders first, keeps going past failures and reports what stayed). Notes written locally while iCloud was unavailable join iCloud at the next launch.
   - `Markdown/`: `MarkdownLexer` (per-line CommonMark/GFM styling spans, list markers, quote depth, links), `FenceIndex` (incremental code-fence tracking), `MarkdownEditing` (Format actions as pure `TextEdit`s; `hiddenMarkup`/`adjustedCaret`/`deleteMarkup` for the rendered view), `MarkdownLinks` (resolves references, footnotes, `#heading` anchors, other notes), `TextStatistics`.
-- `Sources/MinoteEditor` — AppKit/UIKit shared look: `EditorTheme`, `EditorStyleSheet`, `MarkdownStyler` (rendered/source views; hidden markup = 0.01 pt clear font; drawn markup = clear glyphs + `.minoteMark`/`.minoteBlock` attributes), `MarkdownLayoutFragment` (TextKit 2 fragment that draws those marks; installed by `EditorTextEngine.attach(to:)`), `EditorTextEngine` (text-storage delegate: incremental restyle, caret reveal, Preview, Focus mode, caret snapping out of hidden markup, link/task-box hit testing), `FormatAction`. Branch on `#if os(macOS)`, never `canImport(AppKit)` (true on Catalyst).
+- `Sources/MinoteEditor` — AppKit/UIKit shared look: `EditorTheme`, `EditorStyleSheet`, `MarkdownStyler` (rendered/source views; hidden markup = 0.01 pt clear font; drawn markup = clear glyphs + `.minoteMark`/`.minoteBlock` attributes), `MarkdownLayoutFragment` (TextKit 2 fragment that draws those marks; installed by `EditorTextEngine.attach(to:)`), `EditorTextEngine` (text-storage delegate: incremental restyle, caret reveal, Preview, Focus mode, caret snapping out of hidden markup, fence-aware Return/Tab/Backspace edits, link/task-box hit testing), `FormatAction`. Branch on `#if os(macOS)`, never `canImport(AppKit)` (true on Catalyst).
 - `Sources/Minote` — macOS app (SwiftUI shell + TextKit 2 `NSTextView`). `Debug/DebugDriver.swift` (DEBUG only): with `MINOTE_DRIVER=1` the app takes commands (click/key/type/hover/snapshot…) from `$TMPDIR/minote-driver/in`, against its own `DriverNotes` library — interaction tests without the screen.
 - `Apps/iOS` — iPhone/iPad app (SwiftUI + TextKit 2 `UITextView`). Not a SwiftPM target; built by Xcode or `build-ios-preview.sh`. Module name `MinoteMobile` (`Minote` is the Mac target). `Tests/MinoteiOSUITests`: XCUITests (DEBUG seed via `MINOTE_UITEST_NOTE`).
 - `Support/` — `Minote.xcconfig` (identity + version, single source of truth), Info.plists, entitlements, privacy manifest, container migration.
@@ -30,6 +30,8 @@ xcodegen generate                    # Minote.xcodeproj for App Store archives (
 ## Rules that bit us
 
 - Typing never goes through SwiftUI state. The library drives the editor via the `NoteEditor` protocol.
+- Smart Return, Tab and Backspace go through `EditorTextEngine` (`newlineEdit`, `listShiftEdit`, `markupDeletion`), never `MarkdownEditing` directly: only the engine knows where code blocks are.
+- The lexer runs on every keystroke for the edited line: keep it linear (a long pasted line once took 21 s; see `longLinesFullOfDelimitersStayFast`).
 - Files Minote didn't create are never renamed (auto-naming is gated on the `com.mlutfullaev.minote.autoname` xattr).
 - TextKit 2: `baselineOffset` has its standard meaning inside a fixed line height (negative = lower); a positive one shrinks the line. `NSTextLineFragment.glyphOrigin` is the baseline *before* the offset: drawn baseline = `glyphOrigin.y - baselineOffset`. `drawInsertionPoint` is ignored, hence `CaretView`.
 - Never give the Mac editor's NSScrollView a bottom `contentInsets`: AppKit treats that band as outside the page, so clicks there were swallowed or started a selection to the end of the note. Scroll-past-end is `WriterTextView.bottomPadding` (taller view + `textContainerOrigin` override).
@@ -43,6 +45,7 @@ Container `iCloud.com.mlutfullaev.minote`, shown as "Minote" in iCloud Drive. On
 
 ## Shipping (needs Xcode + an Apple Developer account)
 
+0. Version and build number live only in `Support/Minote.xcconfig`; bump `CURRENT_PROJECT_VERSION` for every upload.
 1. `xcodegen generate`, open `Minote.xcodeproj`, set the Team on both targets, enable the iCloud container in the developer portal.
 2. Archive `Minote-macOS` and `Minote-iOS`, upload from the Organizer. Same bundle id on both → universal purchase.
 3. App Store Connect: privacy policy URL, "Data Not Collected", screenshots. Export compliance is pre-answered (`ITSAppUsesNonExemptEncryption = NO`).
