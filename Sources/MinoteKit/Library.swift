@@ -80,6 +80,10 @@ public final class Library {
     public var directory: URL { store.directory }
     /// Whether the library is in iCloud Drive.
     public var isInICloud: Bool { store.isUbiquitous }
+    /// Whether this is one file opened from elsewhere, in its own window,
+    /// rather than the library folder. It holds exactly that file's note:
+    /// no drafts, and nothing is renamed, duplicated or trashed.
+    public var isSingleFile: Bool { store.singleFile != nil }
 
     public var selectedNote: Note? { selectedID.flatMap(note(with:)) }
 
@@ -143,13 +147,24 @@ public final class Library {
         }
         await rescanNow()
 
-        let lastName = defaults.string(forKey: Self.selectionKey)
-        if let restored = notes.first(where: { $0.fileURL?.lastPathComponent == lastName }) {
-            selectedID = restored.id
-        } else if let first = notes.first {
-            selectedID = first.id
+        if let file = store.singleFile {
+            if let note = notes.first {
+                selectedID = note.id
+            } else {
+                presentedError = LibraryError(
+                    title: "Couldn't open “\(file.lastPathComponent)”",
+                    message: "It may have been moved or deleted, or Minote isn't allowed to read it."
+                )
+            }
         } else {
-            newNote()
+            let lastName = defaults.string(forKey: Self.selectionKey)
+            if let restored = notes.first(where: { $0.fileURL?.lastPathComponent == lastName }) {
+                selectedID = restored.id
+            } else if let first = notes.first {
+                selectedID = first.id
+            } else {
+                newNote()
+            }
         }
         watcher?.start { [weak self] in self?.scheduleRescan() }
         isLoaded = true
@@ -230,6 +245,7 @@ public final class Library {
     /// Starts a new draft at the top and focuses the editor. Nothing is written
     /// until the draft has text; reuses the current draft if it's still empty.
     public func newNote() {
+        guard !isSingleFile else { return }
         searchText = ""
         if let current = selectedNote, current.isDraft, editorText(of: current).isBlank {
             editor?.focus()
@@ -245,7 +261,7 @@ public final class Library {
     /// Returns what's needed to undo, or nil if there's nothing to restore.
     @discardableResult
     public func moveToTrash(_ id: Note.ID) async -> TrashReceipt? {
-        guard let note = note(with: id) else { return nil }
+        guard !isSingleFile, let note = note(with: id) else { return nil }
         captureEditorText(of: note)
         remove(note)
         guard note.fileURL != nil else { return nil }
@@ -286,7 +302,7 @@ public final class Library {
     /// Gives the note a name of the user's choosing. From then on the file
     /// keeps that name instead of following its first line.
     public func rename(_ id: Note.ID, to newName: String) async {
-        guard let note = note(with: id) else { return }
+        guard !isSingleFile, let note = note(with: id) else { return }
         // "Ideas.md" names the file Ideas.md, not Ideas.md.md.
         var name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         if NoteNaming.isNoteFile(URL(fileURLWithPath: name)), (name as NSString).deletingPathExtension.isEmpty == false {
@@ -314,7 +330,7 @@ public final class Library {
 
     /// Copies the note next to the original and opens the copy.
     public func duplicate(_ id: Note.ID) async {
-        guard let note = note(with: id) else { return }
+        guard !isSingleFile, let note = note(with: id) else { return }
         await enqueue(id) { [weak self] in await self?.performSave(note, rename: .always) }.value
         guard let url = note.fileURL else { return }
         do {
@@ -394,6 +410,8 @@ public final class Library {
     }
 
     private func persistSelection() {
+        // The library's last opened note isn't an opened file's business.
+        guard !isSingleFile else { return }
         defaults.set(selectedNote?.fileURL?.lastPathComponent, forKey: Self.selectionKey)
     }
 
@@ -691,6 +709,13 @@ public final class Library {
 
         for note in notes {
             guard let url = note.fileURL, !seen.contains(url) else { continue }
+            if isSingleFile {
+                // An opened file's window keeps its text; edits are written
+                // back where the file was, never into a library folder.
+                note.stamp = nil
+                if note.hasUnsavedChanges { scheduleSave(note) }
+                continue
+            }
             if note.hasUnsavedChanges {
                 // Deleted elsewhere while the user was typing: keep the text and
                 // write it again as a new file rather than lose it.
@@ -706,6 +731,10 @@ public final class Library {
 
         notes.append(contentsOf: added)
         sortNotes()
+        // An opened file that couldn't be read at first shows up once it can.
+        if isSingleFile, isLoaded, selectedID == nil, let first = notes.first {
+            selectedID = first.id
+        }
     }
 
     // MARK: Helpers

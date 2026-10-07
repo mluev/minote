@@ -20,12 +20,14 @@
 			</array>
 		</dict>
 		<dict>
-			<!-- Modification dates of the user's notes inside the app container. -->
+			<!-- Modification dates of the user's notes inside the app container,
+			     and of files the user opened (to notice edits made by other apps). -->
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>C617.1</string>
+				<string>3B52.1</string>
 			</array>
 		</dict>
 	</array>
