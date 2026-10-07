@@ -31,14 +31,20 @@ public struct SavedFile: Sendable {
 /// Moves a file to the Trash and returns where it went (needed for undo).
 public typealias TrashHandler = @Sendable (URL) throws -> URL?
 
-/// All disk access for one library folder. Every method is synchronous inside
-/// the actor, so operations never interleave with each other.
+/// All disk access for one library folder, or for one file opened from
+/// elsewhere (`init(file:backupDirectory:)`). Every method is synchronous
+/// inside the actor, so operations never interleave with each other.
 public actor NoteFileStore {
     /// Extended attribute holding the stem Minote chose for a file it created.
     /// While it matches the file's current name, the file follows its first line.
     public static let autoNameAttribute = "com.mlutfullaev.minote.autoname"
 
     public nonisolated let directory: URL
+    /// The one file this store manages when it was opened from outside the
+    /// library (File ▸ Open…, Finder), or nil for a library folder. Such a store
+    /// reads and writes that file in place and never lists, creates, renames or
+    /// trashes anything: the sandbox grants access to the file, not its folder.
+    public nonisolated let singleFile: URL?
     /// iCloud folders need file coordination, placeholder downloads and
     /// conflict handling; local folders don't.
     public nonisolated let isUbiquitous: Bool
@@ -58,10 +64,22 @@ public actor NoteFileStore {
         // we build matches what directory listings return.
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directory = directory.standardizedFileURL.resolvingSymlinksInPath()
+        self.singleFile = nil
         self.isUbiquitous = isUbiquitous
         self.backupDirectory = backupDirectory
             ?? self.directory.deletingLastPathComponent().appendingPathComponent("Backups", isDirectory: true)
         self.trashHandler = trash
+    }
+
+    /// A store for one file opened from elsewhere. Its folder is neither created
+    /// nor listed, and the file is never renamed, trashed or auto-named.
+    public init(file: URL, backupDirectory: URL) {
+        let file = file.standardizedFileURL.resolvingSymlinksInPath()
+        self.singleFile = file
+        self.directory = file.deletingLastPathComponent()
+        self.isUbiquitous = false
+        self.backupDirectory = backupDirectory
+        self.trashHandler = { _ in throw CocoaError(.featureUnsupported) }
     }
 
     public static let moveToSystemTrash: TrashHandler = { url in
@@ -74,12 +92,14 @@ public actor NoteFileStore {
 
     /// Makes sure the library folder exists.
     public func prepare() throws {
+        guard singleFile == nil else { return }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
     /// Lists every note file. Contents are read only for files whose stamp
     /// differs from `known`, so periodic rescans stay cheap.
     public func scan(known: [URL: FileStamp]) throws -> [ScannedFile] {
+        if let singleFile { return try scan(file: singleFile, known: known) }
         try prepare()
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         let listing = try fileManager.contentsOfDirectory(
@@ -124,6 +144,17 @@ public actor NoteFileStore {
         return files
     }
 
+    /// The opened file alone, or nothing while it's missing. Minote's naming tag
+    /// is ignored: a file opened from elsewhere never follows its first line,
+    /// even a copy of a note Minote created.
+    private func scan(file url: URL, known: [URL: FileStamp]) throws -> [ScannedFile] {
+        guard let values = try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+              values.isRegularFile == true else { return [] }
+        let stamp = FileStamp(modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
+        let text = known[url] == stamp ? nil : try readText(at: url)
+        return [ScannedFile(url: url, stamp: stamp, autoNameTag: nil, text: text)]
+    }
+
     // MARK: Reading and writing
 
     public func readText(at url: URL) throws -> String {
@@ -149,6 +180,7 @@ public actor NoteFileStore {
 
     /// Creates a new auto-named file for `text`, named after `base` (or "base 2", …).
     public func create(text: String, base: String) throws -> SavedFile {
+        try requireFolder()
         try prepare()
         let data = Data(text.utf8)
         while true {
@@ -177,18 +209,27 @@ public actor NoteFileStore {
     }
 
     /// Atomic replace that keeps the original's creation date, Finder labels and
-    /// extended attributes (Finder tags live in an xattr).
+    /// extended attributes (Finder tags live in an xattr). An opened file's
+    /// sandbox grant doesn't cover its folder, where an atomic write stages its
+    /// temporary file: a missing one is written in place, and if the system
+    /// refuses the replacement, the file is overwritten in place rather than
+    /// left unsaved.
     private func safeWrite(_ data: Data, to url: URL) throws {
         guard fileManager.fileExists(atPath: url.path) else {
-            try data.write(to: url, options: .atomic)
+            try data.write(to: url, options: singleFile == nil ? .atomic : [])
             return
         }
-        let scratch = try fileManager.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
-        defer { try? fileManager.removeItem(at: scratch) }
-        let temporary = scratch.appendingPathComponent(url.lastPathComponent)
-        try data.write(to: temporary)
-        try copyExtendedAttributes(from: url, to: temporary)
-        _ = try fileManager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
+        do {
+            let scratch = try fileManager.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
+            defer { try? fileManager.removeItem(at: scratch) }
+            let temporary = scratch.appendingPathComponent(url.lastPathComponent)
+            try data.write(to: temporary)
+            try copyExtendedAttributes(from: url, to: temporary)
+            _ = try fileManager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
+        } catch where singleFile != nil {
+            logger.notice("Replacing \(url.lastPathComponent, privacy: .public) failed, writing in place: \(error.localizedDescription, privacy: .public)")
+            try data.write(to: url)
+        }
     }
 
     private func copyExtendedAttributes(from source: URL, to destination: URL) throws {
@@ -228,6 +269,7 @@ public actor NoteFileStore {
     /// Renames the file to follow `base`, keeping its extension. Returns the
     /// (possibly unchanged) URL. Never overwrites another file.
     public func rename(_ url: URL, toBase base: String) throws -> URL {
+        try requireFolder()
         let ext = url.pathExtension
         let current = url.deletingPathExtension().lastPathComponent
         let stem = NoteNaming.uniqueStem(base: base) { candidate in
@@ -260,6 +302,7 @@ public actor NoteFileStore {
     /// A name the user chose: the file stops following its first line.
     /// Refuses to replace another file.
     public func renameManually(_ url: URL, to stem: String) throws -> URL {
+        try requireFolder()
         let ext = url.pathExtension
         let destination = fileURL(stem: stem, ext: ext)
         let current = url.deletingPathExtension().lastPathComponent
@@ -275,6 +318,7 @@ public actor NoteFileStore {
 
     /// Copies a note to "Name copy.md" (or "Name copy 2.md"), named by hand.
     public func duplicate(_ url: URL) throws -> URL {
+        try requireFolder()
         let ext = url.pathExtension
         let base = url.deletingPathExtension().lastPathComponent + " copy"
         let stem = NoteNaming.uniqueStem(base: base) { fileExists(stem: $0, ext: ext) }
@@ -295,6 +339,7 @@ public actor NoteFileStore {
 
     /// Puts a trashed file back into the library, under a free name.
     public func restore(_ trashedURL: URL, preferredName: String) throws -> URL {
+        try requireFolder()
         try prepare()
         let ext = (preferredName as NSString).pathExtension
         let base = (preferredName as NSString).deletingPathExtension
@@ -317,8 +362,12 @@ public actor NoteFileStore {
 
     // MARK: iCloud
 
+    /// iCloud needs coordinated access. So does a file opened from elsewhere: it
+    /// may sit in iCloud Drive or a synced folder, and other editors may have it open.
+    private nonisolated var coordinates: Bool { isUbiquitous || singleFile != nil }
+
     private func coordinate(reading url: URL, _ body: (URL) throws -> Void) throws {
-        guard isUbiquitous else { return try body(url) }
+        guard coordinates else { return try body(url) }
         var coordinationError: NSError?
         var bodyError: Error?
         NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordinationError) { url in
@@ -328,7 +377,7 @@ public actor NoteFileStore {
     }
 
     private func coordinate(writing url: URL, options: NSFileCoordinator.WritingOptions, _ body: (URL) throws -> Void) throws {
-        guard isUbiquitous else { return try body(url) }
+        guard coordinates else { return try body(url) }
         var coordinationError: NSError?
         var bodyError: Error?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: options, error: &coordinationError) { url in
@@ -338,7 +387,7 @@ public actor NoteFileStore {
     }
 
     private func coordinate(moving source: URL, to destination: URL, _ body: (URL, URL) throws -> Void) throws {
-        guard isUbiquitous else { return try body(source, destination) }
+        guard coordinates else { return try body(source, destination) }
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinationError: NSError?
         var bodyError: Error?
@@ -379,6 +428,12 @@ public actor NoteFileStore {
     }
 
     // MARK: Helpers
+
+    /// Naming, copying and restoring place files in the library folder, which an
+    /// opened file's store doesn't have.
+    private func requireFolder() throws {
+        if singleFile != nil { throw CocoaError(.featureUnsupported) }
+    }
 
     public nonisolated func fileURL(named name: String) -> URL {
         directory.appendingPathComponent(name, isDirectory: false)

@@ -160,6 +160,29 @@ struct NoteFileStoreTests {
         #expect(try await store.readText(at: utf16) == "naïve – text")
     }
 
+    @Test func anOpenedFileStoreSeesOnlyThatFile() async throws {
+        let library = try TemporaryLibrary()
+        try library.write("Other", to: "Other.md")
+        try library.write("Opened\nbody", to: "Opened.md")
+        let file = library.notes.appendingPathComponent("Opened.md")
+        try ExtendedAttributes.set("Opened", named: NoteFileStore.autoNameAttribute, at: file)
+        let store = NoteFileStore(file: file, backupDirectory: library.root.appendingPathComponent("Backups"))
+
+        let files = try await store.scan(known: [:])
+        #expect(files.map(\.url.lastPathComponent) == ["Opened.md"])
+        #expect(files.first?.autoNameTag == nil)
+        #expect(files.first?.text == "Opened\nbody")
+
+        // Nothing that would put a file somewhere else.
+        await #expect(throws: CocoaError.self) { try await store.rename(file, toBase: "Renamed") }
+        await #expect(throws: CocoaError.self) { try await store.duplicate(file) }
+        await #expect(throws: CocoaError.self) { try await store.trash(file) }
+        #expect(library.fileNames == ["Opened.md", "Other.md"])
+
+        try FileManager.default.removeItem(at: file)
+        #expect(try await store.scan(known: [:]).isEmpty)
+    }
+
     @Test func backupsGoWhereTheAppSays() async throws {
         let library = try TemporaryLibrary()
         let backups = library.root.appendingPathComponent("Elsewhere", isDirectory: true)

@@ -8,7 +8,9 @@ struct AppCommands: Commands {
     let library: Library
     let windowState: WindowState
     let storage: LibraryStorageSwitcher
+    let openedFiles: OpenedFiles
 
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
     @AppStorage(PreferenceKey.fontSize) private var fontSize = EditorTheme.defaultFontSize
     @AppStorage(PreferenceKey.appearance) private var appearance = AppearancePreference.system
@@ -29,12 +31,35 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .help) {}
     }
 
+    /// The window the menus act on: an opened file's when it's in front,
+    /// otherwise the library's.
+    private var front: (library: Library, windowState: WindowState) {
+        if let session = openedFiles.frontSession { return (session.library, session.windowState) }
+        return (library, windowState)
+    }
+
+    /// Library commands don't apply to an opened file.
+    private var isFileInFront: Bool { openedFiles.frontSession != nil }
+
     // MARK: File
 
     @CommandsBuilder private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Note") { library.newNote() }
-                .keyboardShortcut("n")
+            Button("New Note") {
+                openWindow(id: "main")
+                if library.isLoaded { library.newNote() }
+            }
+            .keyboardShortcut("n")
+            Button("Open…") { openedFiles.showOpenPanel() }
+                .keyboardShortcut("o")
+            Menu("Open Recent") {
+                ForEach(openedFiles.recents, id: \.self) { url in
+                    Button(openedFiles.recentTitle(for: url)) { openedFiles.openRecent(url) }
+                }
+                Divider()
+                Button("Clear Menu") { openedFiles.clearRecents() }
+                    .disabled(openedFiles.recents.isEmpty)
+            }
         }
         CommandGroup(after: .newItem) {
             Button("Duplicate") {
@@ -42,13 +67,13 @@ struct AppCommands: Commands {
                 Task { await library.duplicate(id) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(library.selectedNote?.isDraft ?? true)
+            .disabled(isFileInFront || library.selectedNote?.isDraft ?? true)
             Button("Rename…") { windowState.renaming = library.selectedNote }
-                .disabled(library.selectedNote?.isBlankDraft ?? true)
+                .disabled(isFileInFront || library.selectedNote?.isBlankDraft ?? true)
             Divider()
-            Button("Show in Finder") { NoteActions.revealInFinder(library.selectedNote) }
+            Button("Show in Finder") { NoteActions.revealInFinder(front.library.selectedNote) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(library.selectedNote?.fileURL == nil)
+                .disabled(front.library.selectedNote?.fileURL == nil)
             Button("Show Library in Finder") { NoteActions.openLibraryFolder(library) }
             Toggle(storage.isICloudAvailable ? "Keep Notes in iCloud Drive" : "Keep Notes in iCloud Drive (iCloud Unavailable)", isOn: Binding(
                 get: { storage.storage == .iCloud },
@@ -62,15 +87,16 @@ struct AppCommands: Commands {
                 NoteActions.moveToTrash(id, in: library, undoManager: NSApp.keyWindow?.undoManager)
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!windowState.isSidebarFocused || library.selectedNote == nil)
+            .disabled(isFileInFront || !windowState.isSidebarFocused || library.selectedNote == nil)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
-                let title = library.selectedNote?.title ?? "Note"
-                windowState.editor?.printNote(title: title.isEmpty ? "Note" : title)
+                let front = self.front
+                let title = front.library.selectedNote?.title ?? "Note"
+                front.windowState.editor?.printNote(title: title.isEmpty ? "Note" : title)
             }
             .keyboardShortcut("p")
-            .disabled(library.selectedNote == nil)
+            .disabled(front.library.selectedNote == nil)
         }
     }
 
@@ -79,6 +105,7 @@ struct AppCommands: Commands {
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
             Button("Search All Notes") {
+                if isFileInFront { openWindow(id: "main") }
                 windowState.columnVisibility = .all
                 windowState.searchFocusRequest += 1
             }
@@ -120,8 +147,8 @@ struct AppCommands: Commands {
 
     @ViewBuilder
     private func format(_ title: String, _ action: FormatAction, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
-        let button = Button(title) { windowState.editor?.perform(action) }
-            .disabled(!windowState.isEditorFocused)
+        let button = Button(title) { front.windowState.editor?.perform(action) }
+            .disabled(!front.windowState.isEditorFocused)
         if let key {
             button.keyboardShortcut(key, modifiers: modifiers)
         } else {
@@ -134,9 +161,9 @@ struct AppCommands: Commands {
     @CommandsBuilder private var viewCommands: some Commands {
         CommandGroup(after: .sidebar) {
             Divider()
-            Toggle("Preview", isOn: Binding(get: { windowState.isPreviewing }, set: { windowState.isPreviewing = $0 }))
+            Toggle("Preview", isOn: Binding(get: { front.windowState.isPreviewing }, set: { front.windowState.isPreviewing = $0 }))
                 .keyboardShortcut("r")
-                .disabled(library.selectedNote == nil)
+                .disabled(front.library.selectedNote == nil)
             Divider()
             Toggle("Focus Mode", isOn: $focusEnabled)
                 .keyboardShortcut("d")
@@ -167,7 +194,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("0")
                 .disabled(fontSize == EditorTheme.defaultFontSize)
             Divider()
-            Picker("Appearance", selection: $appearance) {
+            // Applied here too: the library window, which also applies it, may not be open.
+            Picker("Appearance", selection: Binding(get: { appearance }, set: { appearance = $0; NSApp.appearance = $0.nsAppearance })) {
                 ForEach(AppearancePreference.allCases) { preference in
                     Text(preference.displayName).tag(preference)
                 }

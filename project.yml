@@ -61,6 +61,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Support/Minote-AppStore.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_APP_SANDBOX: YES
+        ENABLE_USER_SELECTED_FILES: readwrite   # opened files are edited in place
         COMBINE_HIDPI_IMAGES: YES
 
   Minote-iOS:
