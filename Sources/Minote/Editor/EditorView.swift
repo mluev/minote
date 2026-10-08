@@ -58,6 +58,12 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     /// True while we replace the text ourselves (not a user edit).
     private var isReplacingText = false
     private var statisticsTask: Task<Void, Never>?
+    /// Bumped whenever the text changes, so the counter can tell a caret move
+    /// over the same text (nothing to recount) from an edit.
+    private var textRevision = 0
+    /// What the counter shows: the text revision and the selection it counted
+    /// (empty for the whole note).
+    private var counted: (revision: Int, selection: NSRange)?
     private var layoutInputs: (topInset: CGFloat, viewportHeight: CGFloat) = (0, 0)
 
     private let linkHint = LinkHintView()
@@ -232,6 +238,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     func textDidChange(_ notification: Notification) {
         guard !isReplacingText, let id = displayedNoteID else { return }
+        textRevision += 1
         library?.editorDidChange(noteID: id, prefix: textView.textPrefix())
         afterTextChange()
     }
@@ -276,22 +283,35 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         scheduleStatistics()
     }
 
-    /// Recounts after typing pauses: the selection if there is one, else the note.
+    /// Recounts after typing pauses: the selection if there is one, else the
+    /// note. Moving the caret over unchanged text counts nothing again, and
+    /// the counting itself happens off the main thread.
     private func scheduleStatistics() {
         guard windowState?.showsCounter == true else { return }
+        let target = Self.countedSelection(textView.selectedRange())
+        if let counted, counted.revision == textRevision, counted.selection == target { return }
         statisticsTask?.cancel()
         statisticsTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard let self, !Task.isCancelled, let storage = self.textView.textStorage else { return }
-            let selection = self.textView.selectedRange()
+            let selection = Self.countedSelection(self.textView.selectedRange())
+            let revision = self.textRevision
             let text = selection.length > 0 ? storage.mutableString.substring(with: selection) : self.textView.string
-            let statistics = TextStatistics(text)
+            let statistics = await Task.detached(priority: .utility) { TextStatistics(text) }.value
+            guard !Task.isCancelled else { return }
             self.windowState?.statistics = statistics
             self.windowState?.statisticsAreForSelection = selection.length > 0
+            self.counted = (revision, selection)
         }
     }
 
+    /// A caret counts the whole note, whichever line it's on.
+    private static func countedSelection(_ selection: NSRange) -> NSRange {
+        selection.length > 0 ? selection : NSRange(location: 0, length: 0)
+    }
+
     func refreshStatistics() {
+        counted = nil
         scheduleStatistics()
     }
 
@@ -313,6 +333,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         isReplacingText = true
         defer { isReplacingText = false }
         engine.prepareForNewText()
+        textRevision += 1
         textView.string = text
         textView.typingAttributes = textView.styleSheet.baseAttributes
     }
