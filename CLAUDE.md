@@ -33,6 +33,7 @@ xcodegen generate                    # Minote.xcodeproj for App Store archives (
 - Menus act on the front window: in `AppCommands` use `front` (an opened file's library/window state, else the library's) for editor commands, and keep library-only commands disabled while `isFileInFront`.
 - Typing never goes through SwiftUI state. The library drives the editor via the `NoteEditor` protocol.
 - Smart Return, Tab and Backspace go through `EditorTextEngine` (`newlineEdit`, `listShiftEdit`, `markupDeletion`), never `MarkdownEditing` directly: only the engine knows where code blocks are.
+- Idle must cost nothing: no repeating Core Animation (the caret blinks with a timer; a repeating animation keeps the render server drawing every frame). A keystroke styles its line once: `EditorTextEngine` shifts the revealed lines with the edit so the selection change that follows doesn't restyle them.
 - The lexer runs on every keystroke for the edited line: keep it linear (a long pasted line once took 21 s; see `longLinesFullOfDelimitersStayFast`).
 - Files Minote didn't create are never renamed (auto-naming is gated on the `com.mlutfullaev.minote.autoname` xattr).
 - TextKit 2: `baselineOffset` has its standard meaning inside a fixed line height (negative = lower); a positive one shrinks the line. `NSTextLineFragment.glyphOrigin` is the baseline *before* the offset: drawn baseline = `glyphOrigin.y - baselineOffset`. `drawInsertionPoint` is ignored, hence `CaretView`.
