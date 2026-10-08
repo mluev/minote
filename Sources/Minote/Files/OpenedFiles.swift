@@ -17,66 +17,19 @@ final class OpenedFiles {
     @ObservationIgnored private var sessions: [FileSession] = []
     /// Windows that closed while their last save was still on its way.
     @ObservationIgnored private var closing: [FileSession] = []
-    @ObservationIgnored private weak var library: Library?
-    @ObservationIgnored private var showLibrary: (() -> Void)?
     @ObservationIgnored private var accessedRecents: Set<URL> = []
-    @ObservationIgnored private weak var libraryWindow: NSWindow?
-    @ObservationIgnored private var hidingLibrary: Task<Void, Never>?
-    /// The library window was hidden at launch (still open as far as SwiftUI knows).
-    @ObservationIgnored private var libraryIsHidden = false
     @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
 
-    /// Set when Minote was launched to open files: the library window stays
-    /// hidden until the user opens Minote itself.
-    @ObservationIgnored var hidesLibraryAtLaunch = false
+    /// The library window; never made or loaded on behalf of an opened file.
+    @ObservationIgnored weak var libraryWindow: LibraryWindow?
+
+    /// Whether any opened file has a window.
+    var hasWindows: Bool { !sessions.isEmpty }
 
     /// What File ▸ Open… offers: the kinds of files the library lists.
     static let contentTypes: [UTType] = Array(Set(NoteNaming.supportedExtensions.compactMap { UTType(filenameExtension: $0) }))
 
-    /// The library window appeared: a file that is one of its notes opens there.
-    func libraryWindowAppeared(_ library: Library, show: @escaping () -> Void) {
-        self.library = library
-        showLibrary = show
-    }
-
     // MARK: The library window
-
-    /// The library window is in place. At a launch that only opened files it
-    /// is hidden before it's ever seen; its library still loads.
-    func libraryWindowAttached(_ window: NSWindow) {
-        guard libraryWindow !== window else { return }
-        libraryWindow = window
-        guard hidesLibraryAtLaunch else { return }
-        hidesLibraryAtLaunch = false
-        libraryIsHidden = true
-        window.alphaValue = 0
-        hidingLibrary = Task { [weak self] in
-            // SwiftUI orders the window in after creating it: keep it out for a moment.
-            for _ in 0..<10 {
-                if window.isVisible { window.orderOut(nil) }
-                try? await Task.sleep(for: .milliseconds(50))
-                if Task.isCancelled { return }
-            }
-            window.alphaValue = 1
-            self?.sessions.last?.window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    /// Opening Minote itself (Dock icon, Launchpad, Spotlight) brings the
-    /// library forward. False if there's no library window to bring yet.
-    func showLibraryWindow() -> Bool {
-        hidingLibrary?.cancel()
-        hidingLibrary = nil
-        if libraryIsHidden, let libraryWindow {
-            libraryIsHidden = false
-            libraryWindow.alphaValue = 1
-            libraryWindow.makeKeyAndOrderFront(nil)
-            return true
-        }
-        guard let showLibrary else { return false }
-        showLibrary()
-        return true
-    }
 
     /// A file opened from Finder or the Dock comes forward alone, like a
     /// preview: the library window doesn't rise along with Minote.
@@ -86,7 +39,7 @@ final class OpenedFiles {
     }
 
     private func keepLibraryBehind() {
-        guard let window = libraryWindow, window.isVisible, !window.isKeyWindow else { return }
+        guard let window = libraryWindow?.window, window.isVisible, !window.isKeyWindow else { return }
         window.orderBack(nil)
         // Activating Minote can raise it again a moment later.
         stopWatchingActivation()
@@ -94,7 +47,7 @@ final class OpenedFiles {
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                if let window = self?.libraryWindow, !window.isKeyWindow { window.orderBack(nil) }
+                if let window = self?.libraryWindow?.window, !window.isKeyWindow { window.orderBack(nil) }
                 self?.stopWatchingActivation()
             }
         }
@@ -127,10 +80,13 @@ final class OpenedFiles {
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         refreshRecents()
 
-        // One of the library's own notes: two editors on one file would overwrite each other.
-        if let library, let showLibrary, let note = library.notes.first(where: { $0.fileURL?.path == url.path }) {
-            library.selectedID = note.id
-            _ = showLibraryWindow()
+        // One of the library's own notes: two editors on one file would overwrite
+        // each other. Only a library that's already loaded is asked; opening a
+        // file never loads it.
+        if let libraryWindow, libraryWindow.library.isLoaded,
+           let note = libraryWindow.library.notes.first(where: { $0.fileURL?.path == url.path }) {
+            libraryWindow.library.selectedID = note.id
+            libraryWindow.show()
             return true
         }
         if let session = sessions.first(where: { $0.url == url }) {
@@ -234,27 +190,5 @@ final class OpenedFiles {
 
     func cancelTermination() {
         for session in all { session.library.cancelTermination() }
-    }
-}
-
-extension View {
-    /// Lets opened files find the library window (see `OpenedFiles.open`).
-    func registersLibraryWindow(_ library: Library, with openedFiles: OpenedFiles) -> some View {
-        modifier(LibraryWindowRegistration(library: library, openedFiles: openedFiles))
-    }
-}
-
-private struct LibraryWindowRegistration: ViewModifier {
-    let library: Library
-    let openedFiles: OpenedFiles
-    @Environment(\.openWindow) private var openWindow
-
-    func body(content: Content) -> some View {
-        content
-            .background(WindowAccessor { openedFiles.libraryWindowAttached($0) })
-            .onAppear {
-                let open = self.openWindow
-                openedFiles.libraryWindowAppeared(library) { open(id: "main") }
-            }
     }
 }
