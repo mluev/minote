@@ -81,6 +81,24 @@ struct EditorTextEngineTests {
         #expect(engine.displayAddress(of: anchor.target) == "Section “Notes”")
     }
 
+    @Test func typingStylesTheLineOnce() {
+        let (engine, storage) = engine("Some **bold** text\nnext")
+        engine.selectionDidChange(NSRange(location: 9, length: 0))
+        storage.replaceCharacters(in: NSRange(location: 9, length: 0), with: "x")
+
+        // Restyling a line resets its attributes, which would drop this probe.
+        let probe = NSAttributedString.Key("Probe")
+        storage.addAttribute(probe, value: true, range: NSRange(location: 0, length: 4))
+        engine.selectionDidChange(NSRange(location: 10, length: 0))
+        #expect(storage.attribute(probe, at: 0, effectiveRange: nil) != nil)
+        func markupSize() -> CGFloat { (storage.attribute(.font, at: 5, effectiveRange: nil) as? NSFont)?.pointSize ?? 0 }
+        #expect(markupSize() > 1)                          // ** shows under the caret
+
+        // Moving to another line still restyles the one it left.
+        engine.selectionDidChange(NSRange(location: 21, length: 0))
+        #expect(markupSize() < 1)
+    }
+
     @Test func printingTurnsDrawingsIntoCharacters() {
         let (engine, _) = engine("- a\n- [x] b\n\n---\n")
         let copy = engine.printableCopy().string

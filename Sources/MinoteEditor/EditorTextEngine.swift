@@ -193,6 +193,17 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             if editedRange.location <= reveal.location { shifted.location = max(0, reveal.location + delta) }
             styler.revealRange = clamp(shifted, to: text.length)
         }
+        if var lines = revealedLines {
+            // The revealed lines grow and shrink with the typing too, so the
+            // selection change that follows doesn't restyle what was just styled.
+            let oldEnd = editedRange.location + editedRange.length - delta
+            if oldEnd <= lines.location, editedRange.location < lines.location {
+                lines.location = max(0, lines.location + delta)
+            } else if editedRange.location <= NSMaxRange(lines) {
+                lines.length = max(0, lines.length + delta)
+            }
+            revealedLines = clamp(lines, to: text.length)
+        }
         guard !isComposing() else { return }
         styler.style(textStorage, range: range, fences: fences)
     }
