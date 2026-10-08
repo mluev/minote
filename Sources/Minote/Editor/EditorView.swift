@@ -67,6 +67,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     private var layoutInputs: (topInset: CGFloat, viewportHeight: CGFloat) = (0, 0)
 
     private let linkHint = LinkHintView()
+    /// The link the hint describes: moving along it changes nothing.
+    private var hintedLink: NSRange?
 
     var configuration: EditorConfiguration { engine.configuration }
 
@@ -112,6 +114,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let change = engine.apply(new, selection: textView.selectedRange())
         if change.contains(.preview) {
             textView.isEditable = displayedNoteID != nil && !new.preview
+            hintedLink = nil
             linkHint.show(address: nil, action: "")
             textView.resetHover()
             textView.needsCaretUpdate()
@@ -334,6 +337,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         defer { isReplacingText = false }
         engine.prepareForNewText()
         textRevision += 1
+        hintedLink = nil
         textView.string = text
         textView.typingAttributes = textView.styleSheet.baseAttributes
     }
@@ -433,7 +437,10 @@ extension EditorCoordinator: WriterTextViewInteraction {
     }
 
     func hoverChanged(linkAt index: Int?) {
-        guard let index, let link = engine.link(at: index) else {
+        let link = index.flatMap { engine.link(at: $0) }
+        guard link?.range != hintedLink else { return }
+        hintedLink = link?.range
+        guard let link else {
             linkHint.show(address: nil, action: "")
             return
         }
