@@ -38,6 +38,11 @@ struct AppCommands: Commands {
         return (library, windowState)
     }
 
+    /// Brings the library window forward, also when it was hidden or closed.
+    private func showLibrary() {
+        if !openedFiles.showLibraryWindow() { openWindow(id: "main") }
+    }
+
     /// Library commands don't apply to an opened file.
     private var isFileInFront: Bool { openedFiles.frontSession != nil }
 
@@ -46,7 +51,7 @@ struct AppCommands: Commands {
     @CommandsBuilder private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Note") {
-                openWindow(id: "main")
+                showLibrary()
                 if library.isLoaded { library.newNote() }
             }
             .keyboardShortcut("n")
@@ -105,7 +110,7 @@ struct AppCommands: Commands {
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
             Button("Search All Notes") {
-                if isFileInFront { openWindow(id: "main") }
+                if isFileInFront { showLibrary() }
                 windowState.columnVisibility = .all
                 windowState.searchFocusRequest += 1
             }

@@ -30,6 +30,8 @@ xcodegen generate                    # Minote.xcodeproj for App Store archives (
 ## Rules that bit us
 
 - An opened file never joins the library list and is never renamed, moved or trashed. A file that is one of the library's notes opens in the library window instead: two editors on one file overwrite each other.
+- Opening a file from Finder or the Dock shows only that file, like Preview: a launch for files (`kAEOpenDocuments` at `applicationWillFinishLaunching`) hides the library window before it's seen (it still loads), and when Minote is already running the library window is pushed back (`orderBack`) instead of rising with the app. Opening Minote itself (`applicationShouldHandleReopen`) shows the library.
+- The sidebar draws its own rows (`SidebarView`: ScrollView + `NoteRow`, `EditorTheme.sidebar*` colors). Don't go back to a system `List(.sidebar)`: its translucency and accent-colored selection can't be restyled to match the page.
 - Menus act on the front window: in `AppCommands` use `front` (an opened file's library/window state, else the library's) for editor commands, and keep library-only commands disabled while `isFileInFront`.
 - Typing never goes through SwiftUI state. The library drives the editor via the `NoteEditor` protocol.
 - Smart Return, Tab and Backspace go through `EditorTextEngine` (`newlineEdit`, `listShiftEdit`, `markupDeletion`), never `MarkdownEditing` directly: only the engine knows where code blocks are.

@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import MinoteKit
 import SwiftUI
 import MinoteEditor
@@ -84,11 +85,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appearance = UserDefaults.standard.string(forKey: PreferenceKey.appearance).flatMap(AppearancePreference.init(rawValue:))
         NSApp.appearance = appearance?.nsAppearance
         openedFiles.refreshRecents()
+        // Launched by opening files (Finder, the Dock): show just those, not the library.
+        let launch = NSAppleEventManager.shared().currentAppleEvent
+        openedFiles.hidesLibraryAtLaunch = launch?.eventClass == AEEventClass(kCoreEventClass)
+            && launch?.eventID == AEEventID(kAEOpenDocuments)
     }
 
     /// Finder (double-click, Open With), files dropped on the Dock icon, recent files.
     func application(_ application: NSApplication, open urls: [URL]) {
-        openedFiles.open(urls)
+        openedFiles.openFromOutside(urls)
+    }
+
+    /// Opening Minote itself while it runs (Dock icon, Launchpad, Spotlight)
+    /// shows the library, also when only opened files' windows are on screen.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        !openedFiles.showLibraryWindow()
     }
 
     func applicationDidResignActive(_ notification: Notification) {

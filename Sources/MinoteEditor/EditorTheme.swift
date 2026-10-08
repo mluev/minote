@@ -37,6 +37,13 @@ public enum EditorTheme {
     /// Rules and table lines.
     public static let rule = dynamicColor(light: 0xD4D4D4, dark: 0x3A3A3A, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, name: "MinoteRule")
 
+    // The library list: the page's paper, a shade darker.
+    public static let sidebarBackground = dynamicColor(light: 0xEEEEEE, dark: 0x161616, highContrastLight: 0xE6E6E6, highContrastDark: 0x0E0E0E, name: "MinoteSidebarBackground")
+    /// Behind the selected note.
+    public static let sidebarSelection = dynamicColor(light: 0xE2E2E2, dark: 0x2A2A2A, highContrastLight: 0xCFCFCF, highContrastDark: 0x3A3A3A, name: "MinoteSidebarSelection")
+    /// Behind the note under the pointer.
+    public static let sidebarHover = dynamicColor(light: 0xE7E7E7, dark: 0x212121, highContrastLight: 0xDBDBDB, highContrastDark: 0x2A2A2A, name: "MinoteSidebarHover")
+
     // Parts of speech (Syntax Highlight).
     public static let adjective = dynamicColor(light: 0xB0731F, dark: 0xD9A04E, name: "MinoteAdjective")
     public static let noun = dynamicColor(light: 0xC2402F, dark: 0xE8705F, name: "MinoteNoun")

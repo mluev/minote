@@ -20,6 +20,15 @@ final class OpenedFiles {
     @ObservationIgnored private weak var library: Library?
     @ObservationIgnored private var showLibrary: (() -> Void)?
     @ObservationIgnored private var accessedRecents: Set<URL> = []
+    @ObservationIgnored private weak var libraryWindow: NSWindow?
+    @ObservationIgnored private var hidingLibrary: Task<Void, Never>?
+    /// The library window was hidden at launch (still open as far as SwiftUI knows).
+    @ObservationIgnored private var libraryIsHidden = false
+    @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
+
+    /// Set when Minote was launched to open files: the library window stays
+    /// hidden until the user opens Minote itself.
+    @ObservationIgnored var hidesLibraryAtLaunch = false
 
     /// What File ▸ Open… offers: the kinds of files the library lists.
     static let contentTypes: [UTType] = Array(Set(NoteNaming.supportedExtensions.compactMap { UTType(filenameExtension: $0) }))
@@ -30,6 +39,76 @@ final class OpenedFiles {
         showLibrary = show
     }
 
+    // MARK: The library window
+
+    /// The library window is in place. At a launch that only opened files it
+    /// is hidden before it's ever seen; its library still loads.
+    func libraryWindowAttached(_ window: NSWindow) {
+        guard libraryWindow !== window else { return }
+        libraryWindow = window
+        guard hidesLibraryAtLaunch else { return }
+        hidesLibraryAtLaunch = false
+        libraryIsHidden = true
+        window.alphaValue = 0
+        hidingLibrary = Task { [weak self] in
+            // SwiftUI orders the window in after creating it: keep it out for a moment.
+            for _ in 0..<10 {
+                if window.isVisible { window.orderOut(nil) }
+                try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
+            }
+            window.alphaValue = 1
+            self?.sessions.last?.window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Opening Minote itself (Dock icon, Launchpad, Spotlight) brings the
+    /// library forward. False if there's no library window to bring yet.
+    func showLibraryWindow() -> Bool {
+        hidingLibrary?.cancel()
+        hidingLibrary = nil
+        if libraryIsHidden, let libraryWindow {
+            libraryIsHidden = false
+            libraryWindow.alphaValue = 1
+            libraryWindow.makeKeyAndOrderFront(nil)
+            return true
+        }
+        guard let showLibrary else { return false }
+        showLibrary()
+        return true
+    }
+
+    /// A file opened from Finder or the Dock comes forward alone, like a
+    /// preview: the library window doesn't rise along with Minote.
+    func openFromOutside(_ urls: [URL]) {
+        let toLibrary = urls.map { open($0) }
+        if !toLibrary.contains(true) { keepLibraryBehind() }
+    }
+
+    private func keepLibraryBehind() {
+        guard let window = libraryWindow, window.isVisible, !window.isKeyWindow else { return }
+        window.orderBack(nil)
+        // Activating Minote can raise it again a moment later.
+        stopWatchingActivation()
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let window = self?.libraryWindow, !window.isKeyWindow { window.orderBack(nil) }
+                self?.stopWatchingActivation()
+            }
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.stopWatchingActivation()
+        }
+    }
+
+    private func stopWatchingActivation() {
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
+    }
+
     // MARK: Opening
 
     func open(_ urls: [URL]) {
@@ -37,11 +116,13 @@ final class OpenedFiles {
     }
 
     /// Shows the file in its own window, or brings its window to the front.
-    func open(_ url: URL) {
+    /// Returns true when the file is one of the library's notes and was shown there.
+    @discardableResult
+    func open(_ url: URL) -> Bool {
         let url = url.standardizedFileURL.resolvingSymlinksInPath()
         guard Self.canOpen(url) else {
             NSSound.beep()
-            return
+            return false
         }
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         refreshRecents()
@@ -49,12 +130,12 @@ final class OpenedFiles {
         // One of the library's own notes: two editors on one file would overwrite each other.
         if let library, let showLibrary, let note = library.notes.first(where: { $0.fileURL?.path == url.path }) {
             library.selectedID = note.id
-            showLibrary()
-            return
+            _ = showLibraryWindow()
+            return true
         }
         if let session = sessions.first(where: { $0.url == url }) {
             session.window.makeKeyAndOrderFront(nil)
-            return
+            return false
         }
         let session = FileSession(url: url)
         session.onMainChange = { [weak self] session, isMain in
@@ -66,6 +147,7 @@ final class OpenedFiles {
         let previous = sessions.last?.window
         sessions.append(session)
         session.show(after: previous?.isVisible == true ? previous : nil)
+        return false
     }
 
     /// Markdown and other plain text; anything else isn't Minote's to edit.
@@ -168,9 +250,11 @@ private struct LibraryWindowRegistration: ViewModifier {
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
-        content.onAppear {
-            let open = self.openWindow
-            openedFiles.libraryWindowAppeared(library) { open(id: "main") }
-        }
+        content
+            .background(WindowAccessor { openedFiles.libraryWindowAttached($0) })
+            .onAppear {
+                let open = self.openWindow
+                openedFiles.libraryWindowAppeared(library) { open(id: "main") }
+            }
     }
 }
