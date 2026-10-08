@@ -54,6 +54,10 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     private(set) var displayedNoteID: Note.ID?
     private var undoManagers: [Note.ID: UndoManager] = [:]
+    /// Notes shown in this window, most recent first. Only the latest few
+    /// keep their undo history: each holds every piece of text it replaced.
+    private var recentlyShown: [Note.ID] = []
+    private static let undoHistoryLimit = 10
     private var viewStates: [Note.ID: (selection: NSRange, scroll: NSPoint)] = [:]
     /// True while we replace the text ourselves (not a user edit).
     private var isReplacingText = false
@@ -161,6 +165,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         }
         pruneState()
         displayedNoteID = note?.id
+        if let id = note?.id { rememberShown(id) }
         replaceText(with: note?.text ?? "")
         textView.isEditable = note != nil && !configuration.preview
 
@@ -360,6 +365,18 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let live = Set(library.notes.map(\.id))
         undoManagers = undoManagers.filter { live.contains($0.key) }
         viewStates = viewStates.filter { live.contains($0.key) }
+        recentlyShown.removeAll { !live.contains($0) }
+    }
+
+    /// Moves a note to the front of the recently shown ones and drops the
+    /// undo history of notes that fell off the end.
+    private func rememberShown(_ id: Note.ID) {
+        recentlyShown.removeAll { $0 == id }
+        recentlyShown.insert(id, at: 0)
+        for old in recentlyShown.dropFirst(Self.undoHistoryLimit) {
+            undoManagers[old] = nil
+        }
+        recentlyShown = Array(recentlyShown.prefix(Self.undoHistoryLimit))
     }
 }
 
