@@ -336,7 +336,51 @@ final class WriterTextView: NSTextView {
         }
     }
 
+    // MARK: Caret after an edit
+
+    /// Where the caret belongs once the edit in progress lands. The engine
+    /// restyles whole lines while the edit is processed, so the edited range
+    /// TextKit 2 sees runs to the end of the line, and it moves the caret
+    /// there: typing mid-line put it at the start of the next line.
+    private var caretAfterEdit: Int?
+
+    override func shouldChangeText(inRanges affectedRanges: [NSValue], replacementStrings: [String]?) -> Bool {
+        let allowed = super.shouldChangeText(inRanges: affectedRanges, replacementStrings: replacementStrings)
+        expectCaret(allowed: allowed, ranges: affectedRanges.map(\.rangeValue), strings: replacementStrings)
+        return allowed
+    }
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        let allowed = super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+        expectCaret(allowed: allowed, ranges: [affectedCharRange], strings: replacementString.map { [$0] })
+        return allowed
+    }
+
+    /// Only a single replacement typed, pasted or deleted by the user (undo
+    /// and redo put the caret where the change was, on purpose).
+    private func expectCaret(allowed: Bool, ranges: [NSRange], strings: [String]?) {
+        caretAfterEdit = nil
+        guard allowed, ranges.count == 1, let strings, strings.count == 1,
+              undoManager?.isUndoing != true, undoManager?.isRedoing != true else { return }
+        let range = ranges[0], length = strings[0].utf16.count
+        let old = selectedRange().location
+        if old >= NSMaxRange(range) {
+            caretAfterEdit = old + length - range.length
+        } else if old >= range.location {
+            caretAfterEdit = range.location + length
+        } else {
+            caretAfterEdit = old
+        }
+    }
+
     override func didChangeText() {
+        if let caret = caretAfterEdit {
+            caretAfterEdit = nil
+            let selection = selectedRange()
+            if selection.length == 0, selection.location != caret, caret <= (textStorage?.length ?? 0), !hasMarkedText() {
+                setSelectedRange(NSRange(location: caret, length: 0))
+            }
+        }
         super.didChangeText()
         needsCaretUpdate()
         onUserEdit?()
