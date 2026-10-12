@@ -5,12 +5,12 @@ import MinoteEditor
 
 /// Every action lives in the system menus; the window stays a blank page.
 struct AppCommands: Commands {
-    let library: Library
-    let windowState: WindowState
-    let storage: LibraryStorageSwitcher
+    let libraryWindow: LibraryWindow
     let openedFiles: OpenedFiles
 
-    @Environment(\.openWindow) private var openWindow
+    private var library: Library { libraryWindow.library }
+    private var windowState: WindowState { libraryWindow.windowState }
+    private var storage: LibraryStorageSwitcher { libraryWindow.storage }
     @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
     @AppStorage(PreferenceKey.fontSize) private var fontSize = EditorTheme.defaultFontSize
     @AppStorage(PreferenceKey.appearance) private var appearance = AppearancePreference.system
@@ -22,6 +22,8 @@ struct AppCommands: Commands {
     @AppStorage(PreferenceKey.showsSyntax) private var showsSyntax = false
 
     var body: some Commands {
+        // No Settings window: every preference lives in the menus.
+        CommandGroup(replacing: .appSettings) {}
         SidebarCommands()
         TextEditingCommands()
         fileCommands
@@ -45,10 +47,7 @@ struct AppCommands: Commands {
 
     @CommandsBuilder private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Note") {
-                openWindow(id: "main")
-                if library.isLoaded { library.newNote() }
-            }
+            Button("New Note") { libraryWindow.newNote() }
             .keyboardShortcut("n")
             Button("Open…") { openedFiles.showOpenPanel() }
                 .keyboardShortcut("o")
@@ -105,7 +104,7 @@ struct AppCommands: Commands {
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
             Button("Search All Notes") {
-                if isFileInFront { openWindow(id: "main") }
+                libraryWindow.show()
                 windowState.columnVisibility = .all
                 windowState.searchFocusRequest += 1
             }

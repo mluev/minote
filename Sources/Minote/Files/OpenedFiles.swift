@@ -17,17 +17,49 @@ final class OpenedFiles {
     @ObservationIgnored private var sessions: [FileSession] = []
     /// Windows that closed while their last save was still on its way.
     @ObservationIgnored private var closing: [FileSession] = []
-    @ObservationIgnored private weak var library: Library?
-    @ObservationIgnored private var showLibrary: (() -> Void)?
     @ObservationIgnored private var accessedRecents: Set<URL> = []
+    @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
+
+    /// The library window; never made or loaded on behalf of an opened file.
+    @ObservationIgnored weak var libraryWindow: LibraryWindow?
+
+    /// Whether any opened file has a window.
+    var hasWindows: Bool { !sessions.isEmpty }
 
     /// What File ▸ Open… offers: the kinds of files the library lists.
     static let contentTypes: [UTType] = Array(Set(NoteNaming.supportedExtensions.compactMap { UTType(filenameExtension: $0) }))
 
-    /// The library window appeared: a file that is one of its notes opens there.
-    func libraryWindowAppeared(_ library: Library, show: @escaping () -> Void) {
-        self.library = library
-        showLibrary = show
+    // MARK: The library window
+
+    /// A file opened from Finder or the Dock comes forward alone, like a
+    /// preview: the library window doesn't rise along with Minote.
+    func openFromOutside(_ urls: [URL]) {
+        let toLibrary = urls.map { open($0) }
+        if !toLibrary.contains(true) { keepLibraryBehind() }
+    }
+
+    private func keepLibraryBehind() {
+        guard let window = libraryWindow?.window, window.isVisible, !window.isKeyWindow else { return }
+        window.orderBack(nil)
+        // Activating Minote can raise it again a moment later.
+        stopWatchingActivation()
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let window = self?.libraryWindow?.window, !window.isKeyWindow { window.orderBack(nil) }
+                self?.stopWatchingActivation()
+            }
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.stopWatchingActivation()
+        }
+    }
+
+    private func stopWatchingActivation() {
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
     }
 
     // MARK: Opening
@@ -37,24 +69,29 @@ final class OpenedFiles {
     }
 
     /// Shows the file in its own window, or brings its window to the front.
-    func open(_ url: URL) {
+    /// Returns true when the file is one of the library's notes and was shown there.
+    @discardableResult
+    func open(_ url: URL) -> Bool {
         let url = url.standardizedFileURL.resolvingSymlinksInPath()
         guard Self.canOpen(url) else {
             NSSound.beep()
-            return
+            return false
         }
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         refreshRecents()
 
-        // One of the library's own notes: two editors on one file would overwrite each other.
-        if let library, let showLibrary, let note = library.notes.first(where: { $0.fileURL?.path == url.path }) {
-            library.selectedID = note.id
-            showLibrary()
-            return
+        // One of the library's own notes: two editors on one file would overwrite
+        // each other. Only a library that's already loaded is asked; opening a
+        // file never loads it.
+        if let libraryWindow, libraryWindow.library.isLoaded,
+           let note = libraryWindow.library.notes.first(where: { $0.fileURL?.path == url.path }) {
+            libraryWindow.library.selectedID = note.id
+            libraryWindow.show()
+            return true
         }
         if let session = sessions.first(where: { $0.url == url }) {
             session.window.makeKeyAndOrderFront(nil)
-            return
+            return false
         }
         let session = FileSession(url: url)
         session.onMainChange = { [weak self] session, isMain in
@@ -66,6 +103,7 @@ final class OpenedFiles {
         let previous = sessions.last?.window
         sessions.append(session)
         session.show(after: previous?.isVisible == true ? previous : nil)
+        return false
     }
 
     /// Markdown and other plain text; anything else isn't Minote's to edit.
@@ -152,25 +190,5 @@ final class OpenedFiles {
 
     func cancelTermination() {
         for session in all { session.library.cancelTermination() }
-    }
-}
-
-extension View {
-    /// Lets opened files find the library window (see `OpenedFiles.open`).
-    func registersLibraryWindow(_ library: Library, with openedFiles: OpenedFiles) -> some View {
-        modifier(LibraryWindowRegistration(library: library, openedFiles: openedFiles))
-    }
-}
-
-private struct LibraryWindowRegistration: ViewModifier {
-    let library: Library
-    let openedFiles: OpenedFiles
-    @Environment(\.openWindow) private var openWindow
-
-    func body(content: Content) -> some View {
-        content.onAppear {
-            let open = self.openWindow
-            openedFiles.libraryWindowAppeared(library) { open(id: "main") }
-        }
     }
 }
