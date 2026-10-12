@@ -24,14 +24,14 @@ struct MinoteMobileApp: App {
         #endif
         let backups = LibraryLocation.backupDirectory()
         let store = NoteFileStore(directory: LibraryLocation.defaultDirectory(), backupDirectory: backups, trash: MobileTrash.moveToTrash)
-        let library = Library(store: store, watcher: DirectoryWatcher(directory: store.directory))
+        let library = Library(store: store, watcher: PathWatcher(url: store.directory))
         _library = ViewState(initialValue: library)
         _storage = ViewState(initialValue: LibraryStorageSwitcher(
             library: library,
             makeStore: { directory, isUbiquitous in
                 NoteFileStore(directory: directory, isUbiquitous: isUbiquitous, backupDirectory: backups, trash: MobileTrash.moveToTrash)
             },
-            makeWatcher: { DirectoryWatcher(directory: $0.standardizedFileURL.resolvingSymlinksInPath()) }
+            makeWatcher: { PathWatcher(url: $0.standardizedFileURL.resolvingSymlinksInPath()) }
         ))
         MobileTrash.purgeExpired()
     }
@@ -106,7 +106,3 @@ final class MobileState {
 
     @ObservationIgnored weak var editor: MobileEditorCoordinator?
 }
-
-/// SwiftUI's `State` property wrapper (see the Mac app's ViewState.swift: the
-/// Command Line Tools can't expand the `@State` macro of the newest SDKs).
-typealias ViewState = SwiftUI.State

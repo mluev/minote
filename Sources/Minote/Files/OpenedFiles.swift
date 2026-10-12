@@ -64,10 +64,6 @@ final class OpenedFiles {
 
     // MARK: Opening
 
-    func open(_ urls: [URL]) {
-        for url in urls { open(url) }
-    }
-
     /// Shows the file in its own window, or brings its window to the front.
     /// Returns true when the file is one of the library's notes and was shown there.
     @discardableResult
@@ -118,7 +114,7 @@ final class OpenedFiles {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
-        open(panel.urls)
+        for url in panel.urls { open(url) }
     }
 
     // MARK: Recent files

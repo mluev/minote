@@ -222,9 +222,13 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
     /// The task box drawn for a checkbox mark, in fragment coordinates.
     func checkboxRect(for mark: PlacedMark) -> CGRect? {
         guard case .checkbox = mark.kind, let sheet = styleSheet else { return nil }
+        return Self.checkbox(x: mark.rect.minX, baseline: mark.baseline, sheet: sheet)
+    }
+
+    private static func checkbox(x: CGFloat, baseline: CGFloat, sheet: EditorStyleSheet) -> CGRect {
         let size = sheet.checkboxSize
-        let center = mark.baseline - sheet.fonts.regular.capHeight / 2
-        return CGRect(x: mark.rect.minX, y: (center - size / 2).rounded(), width: size, height: size)
+        let center = baseline - sheet.fonts.regular.capHeight / 2
+        return CGRect(x: x, y: (center - size / 2).rounded(), width: size, height: size)
     }
 
     // MARK: Drawing
@@ -250,9 +254,8 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
                 context.fill(dot.insetBy(dx: diameter * 0.08, dy: diameter * 0.08))
             }
         case .checkbox(let done):
-            let size = sheet.checkboxSize
-            let center = baseline - sheet.fonts.regular.capHeight / 2
-            let box = CGRect(x: rect.minX, y: (center - size / 2).rounded(), width: size, height: size)
+            let box = Self.checkbox(x: rect.minX, baseline: baseline, sheet: sheet)
+            let size = box.width
             let radius = size * 0.24
             if done {
                 context.setFillColor(cgColor(faded ? EditorTheme.faded : EditorTheme.checkboxDone))
@@ -296,29 +299,17 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         }
     }
 
+    /// The box behind a code block's line. Only the block's first and last
+    /// lines round their corners: the rest of the rounded rect reaches past
+    /// the line and is clipped away.
     private func drawCodeBox(in column: CGRect, top: Bool, bottom: Bool, context: CGContext) {
-        let radius: CGFloat = 6
-        let rect = column
-        let path = CGMutablePath()
-        let topRadius = top ? radius : 0, bottomRadius = bottom ? radius : 0
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY + topRadius))
-        if top {
-            path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX + radius, y: rect.minY), radius: radius)
-            path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY + radius), radius: radius)
-        } else {
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        }
-        if bottom {
-            path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX - radius, y: rect.maxY), radius: radius)
-            path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY), tangent2End: CGPoint(x: rect.minX, y: rect.maxY - bottomRadius), radius: radius)
-        } else {
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        }
-        path.closeSubpath()
+        let radius = min(6, column.height / 2, column.width / 2)
+        var box = column
+        if !top { box.origin.y -= radius; box.size.height += radius }
+        if !bottom { box.size.height += radius }
+        context.clip(to: column)
         context.setFillColor(cgColor(EditorTheme.codeBackground))
-        context.addPath(path)
+        context.addPath(CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil))
         context.fillPath()
     }
 

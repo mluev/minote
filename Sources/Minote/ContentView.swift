@@ -35,8 +35,7 @@ struct ContentView: View {
 
     /// Shown in the Window menu and Mission Control; hidden from the toolbar.
     private var windowTitle: String {
-        guard let note = library.selectedNote else { return "Minote" }
-        return note.title.isEmpty ? "New Note" : note.title
+        library.selectedNote?.displayTitle ?? "Minote"
     }
 
     private func configure(_ window: NSWindow) {

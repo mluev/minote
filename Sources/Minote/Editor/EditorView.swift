@@ -157,7 +157,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     // MARK: NoteEditor
 
-    var isCaretInTitleLine: Bool { textView.isCaretInTitleLine }
+    var isCaretInTitleLine: Bool { engine.isCaretInTitleLine(textView.selectedRange()) }
 
     func display(_ note: Note?) {
         if let current = displayedNoteID {
@@ -170,7 +170,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textView.isEditable = note != nil && !configuration.preview
 
         if let note, let state = viewStates[note.id] {
-            textView.setSelectedRange(clamped(state.selection))
+            textView.setSelectedRange(state.selection.clamped(to: textView.textStorage?.length ?? 0))
             scroll(to: state.scroll)
         } else {
             textView.setSelectedRange(NSRange(location: 0, length: 0))
@@ -190,7 +190,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let origin = scrollView.contentView.bounds.origin
         replaceText(with: text)
         if let id = displayedNoteID { undoManagers[id]?.removeAllActions() }
-        textView.setSelectedRange(clamped(selection))
+        textView.setSelectedRange(selection.clamped(to: textView.textStorage?.length ?? 0))
         scroll(to: origin)
         relayoutViewport()
         afterTextChange()
@@ -247,7 +247,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     func textDidChange(_ notification: Notification) {
         guard !isReplacingText, let id = displayedNoteID else { return }
         textRevision += 1
-        library?.editorDidChange(noteID: id, prefix: textView.textPrefix())
+        library?.editorDidChange(noteID: id, prefix: engine.titlePrefix())
         afterTextChange()
     }
 
@@ -347,12 +347,6 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textView.typingAttributes = textView.styleSheet.baseAttributes
     }
 
-    private func clamped(_ range: NSRange) -> NSRange {
-        let length = textView.textStorage?.length ?? 0
-        let location = min(range.location, length)
-        return NSRange(location: location, length: min(range.length, length - location))
-    }
-
     private func scroll(to point: NSPoint) {
         let clip = scrollView.contentView
         clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: point, size: clip.bounds.size)).origin)
@@ -421,11 +415,10 @@ extension EditorCoordinator: WriterTextViewInteraction {
 
     /// Ticks a task without moving the caret, also in Preview.
     func toggleTask(atLine location: Int) {
-        guard displayedNoteID != nil, let edit = engine.toggleTaskEdit(at: location) else { return }
-        let selection = textView.selectedRange()
+        guard displayedNoteID != nil, let edit = engine.toggleTaskEdit(at: location, keeping: textView.selectedRange()) else { return }
         let wasEditable = textView.isEditable
         textView.isEditable = true
-        textView.apply(TextEdit(edit.replacements, selection: selection), actionName: "Mark Task")
+        textView.apply(edit, actionName: "Mark Task")
         textView.isEditable = wasEditable
         textView.needsCaretUpdate()
     }
@@ -439,13 +432,7 @@ extension EditorCoordinator: WriterTextViewInteraction {
         case .external(let url):
             NSWorkspace.shared.open(url)
         case .file(let path):
-            if let note = library?.note(linkedAs: path) {
-                library?.selectedID = note.id
-            } else if let directory = library?.selectedNote?.fileURL?.deletingLastPathComponent() {
-                NSWorkspace.shared.open(URL(fileURLWithPath: path, relativeTo: directory))
-            } else {
-                NSSound.beep()
-            }
+            if let url = library?.followLink(to: path) { NSWorkspace.shared.open(url) }
         case .anchor(let location):
             let target = NSRange(location: location, length: 0)
             if !configuration.preview { textView.setSelectedRange(target) }

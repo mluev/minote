@@ -55,30 +55,23 @@ public final class MarkdownStyler {
         let string = storage.mutableString
         guard string.length > 0 else { return }
         let clamped = NSIntersectionRange(range, NSRange(location: 0, length: string.length))
-        let block = string.lineRange(for: clamped)
-        storage.setAttributes(styleSheet.baseAttributes, range: block)
+        storage.setAttributes(styleSheet.baseAttributes, range: string.lineRange(for: clamped))
 
-        var location = block.location
-        let end = NSMaxRange(block)
-        var buffer: [UInt16] = []
         let rendered = !showsSyntax
-        while location < end {
-            var lineEnd = 0, contentsEnd = 0
-            string.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+        string.forEachLine(in: clamped) { location, contentsEnd, lineEnd, _ in
             let length = contentsEnd - location
             var codeEdges: (top: Bool, bottom: Bool)?
             if rendered, let fenced = fences.block(containing: location) {
                 codeEdges = (location == fenced.location, lineEnd >= NSMaxRange(fenced))
             }
             if length > 0 {
-                buffer = [UInt16](repeating: 0, count: length)
-                string.getCharacters(&buffer, range: NSRange(location: location, length: length))
-                let line = MarkdownLexer.lex(buffer, insideFence: fences.contains(location))
+                let chars = string.characters(in: location..<contentsEnd)
+                let line = MarkdownLexer.lex(chars, insideFence: fences.contains(location))
                 let reveal = rendered && isRevealed(lineStart: location, lineEnd: lineEnd, endsWithBreak: lineEnd > contentsEnd)
                     ? localReveal(lineStart: location, length: length)
                     : nil
                 let tableHeader = line.kind == .table && Self.isTableDelimiterRow(startingAt: lineEnd, in: string)
-                apply(line, chars: buffer, at: location, lineEnd: lineEnd, rendered: rendered, reveal: reveal,
+                apply(line, chars: chars, at: location, lineEnd: lineEnd, rendered: rendered, reveal: reveal,
                       codeEdges: codeEdges, tableHeader: tableHeader, to: storage)
                 if let focusRange {
                     fade(NSRange(location: location, length: length), outside: focusRange, in: storage)
@@ -87,8 +80,6 @@ public final class MarkdownStyler {
                 // A blank line inside a code block is still part of its box.
                 styleCodeLine(NSRange(location: location, length: lineEnd - location), edges: codeEdges, in: storage)
             }
-            if lineEnd <= location { break }
-            location = lineEnd
         }
     }
 
@@ -113,20 +104,11 @@ public final class MarkdownStyler {
     }
 
     /// `| --- | :-: |`: the row under a table's header.
-    static func isTableDelimiterRow(startingAt location: Int, in string: NSString) -> Bool {
+    private static func isTableDelimiterRow(startingAt location: Int, in string: NSString) -> Bool {
         guard location < string.length else { return false }
         var contentsEnd = 0
         string.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-        var sawPipe = false, sawDash = false
-        for i in location..<contentsEnd {
-            switch string.character(at: i) {
-            case 0x7C: sawPipe = true
-            case 0x2D: sawDash = true
-            case 0x3A, 0x20, 0x09: break
-            default: return false
-            }
-        }
-        return sawPipe && sawDash
+        return MarkdownLexer.isTableDelimiterRow(string.characters(in: location..<contentsEnd))
     }
 
     // MARK: Lines
@@ -349,7 +331,7 @@ public final class MarkdownStyler {
 
     /// Table pipes become thin lines; the delimiter row becomes a rule.
     private func styleTable(_ line: MarkdownLine, chars: [UInt16], at lineStart: Int, in storage: NSTextStorage) {
-        let isDelimiterRow = chars[line.contentStart...].allSatisfy { $0 == 0x7C || $0 == 0x2D || $0 == 0x3A || $0 == 0x20 || $0 == 0x09 }
+        let isDelimiterRow = MarkdownLexer.isTableDelimiterRow(chars[line.contentStart...])
         var i = line.contentStart
         while i < chars.count {
             let isPipe = chars[i] == 0x7C

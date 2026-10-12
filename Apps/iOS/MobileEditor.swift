@@ -88,14 +88,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
 
     // MARK: NoteEditor
 
-    var isCaretInTitleLine: Bool {
-        let string = textView.textStorage.mutableString
-        let first = string.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
-        guard first.location != NSNotFound else { return true }
-        var contentsEnd = 0
-        string.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: first.location, length: 0))
-        return textView.selectedRange.location <= contentsEnd
-    }
+    var isCaretInTitleLine: Bool { engine.isCaretInTitleLine(textView.selectedRange) }
 
     func display(_ note: Note?) {
         if let current = displayedNoteID { selections[current] = textView.selectedRange }
@@ -104,7 +97,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         textView.isEditable = note != nil && !engine.configuration.preview
         textView.undoManager?.removeAllActions()
         if let note, let selection = selections[note.id] {
-            textView.selectedRange = clamped(selection)
+            textView.selectedRange = selection.clamped(to: textView.textStorage.length)
             textView.scrollRangeToVisible(textView.selectedRange)
         } else {
             textView.selectedRange = NSRange(location: 0, length: 0)
@@ -122,7 +115,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         let offset = textView.contentOffset
         replaceText(with: text)
         textView.undoManager?.removeAllActions()
-        textView.selectedRange = clamped(selection)
+        textView.selectedRange = selection.clamped(to: textView.textStorage.length)
         textView.setContentOffset(offset, animated: false)
         afterChange()
     }
@@ -164,7 +157,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
             textView.replace(range, withText: replacement.string)
         }
         undoManager?.endUndoGrouping()
-        textView.selectedRange = clamped(edit.selection)
+        textView.selectedRange = edit.selection.clamped(to: textView.textStorage.length)
         textViewDidChange(textView)
     }
 
@@ -193,7 +186,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
 
     func textViewDidChange(_ textView: UITextView) {
         guard !isReplacingText, let id = displayedNoteID else { return }
-        library?.editorDidChange(noteID: id, prefix: prefix())
+        library?.editorDidChange(noteID: id, prefix: engine.titlePrefix())
         afterChange()
     }
 
@@ -262,11 +255,10 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     }
 
     private func toggleTask(atLine location: Int) {
-        guard displayedNoteID != nil, let edit = engine.toggleTaskEdit(at: location) else { return }
-        let selection = textView.selectedRange
+        guard displayedNoteID != nil, let edit = engine.toggleTaskEdit(at: location, keeping: textView.selectedRange) else { return }
         let wasEditable = textView.isEditable
         textView.isEditable = true
-        apply(TextEdit(edit.replacements, selection: selection))
+        apply(edit)
         textView.isEditable = wasEditable
         UISelectionFeedbackGenerator().selectionChanged()
     }
@@ -277,11 +269,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         case .external(let url):
             UIApplication.shared.open(url)
         case .file(let path):
-            if let note = library?.note(linkedAs: path) {
-                library?.selectedID = note.id
-            } else if let directory = library?.selectedNote?.fileURL?.deletingLastPathComponent() {
-                UIApplication.shared.open(URL(fileURLWithPath: path, relativeTo: directory))
-            }
+            if let url = library?.followLink(to: path) { UIApplication.shared.open(url) }
         case .anchor(let location):
             textView.scrollRangeToVisible(NSRange(location: location, length: 0))
         }
@@ -326,18 +314,6 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         textView.typingAttributes = engine.styleSheet.baseAttributes
     }
 
-    private func prefix() -> String {
-        let string = textView.textStorage.mutableString
-        let length = min(string.length, NoteNaming.prefixLength)
-        guard length > 0 else { return "" }
-        return string.substring(with: string.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: length)))
-    }
-
-    private func clamped(_ range: NSRange) -> NSRange {
-        let length = textView.textStorage.length
-        let location = min(range.location, length)
-        return NSRange(location: location, length: min(range.length, length - location))
-    }
 }
 
 extension MobileEditorCoordinator: UIGestureRecognizerDelegate {
@@ -363,7 +339,7 @@ extension MobileEditorCoordinator: UIGestureRecognizerDelegate {
 
 /// The writing surface on iPhone and iPad.
 final class MobileTextView: UITextView {
-    private(set) var styleSheet = EditorStyleSheet(family: .plexMono, size: 17, hangsMarkers: false)
+    private(set) var styleSheet = EditorStyleSheet(family: .plexMono, size: CGFloat(EditorTheme.defaultFontSize), hangsMarkers: false)
     var typewriter = false
     var onFormat: ((FormatAction) -> Void)?
     var onOutdent: (() -> Void)?

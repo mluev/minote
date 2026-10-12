@@ -14,12 +14,12 @@ final class FileSession: NSObject, NSWindowDelegate {
     var onMainChange: ((FileSession, Bool) -> Void)?
     var onClose: ((FileSession) -> Void)?
 
-    private let watcher: FileWatcher
+    private let watcher: PathWatcher
 
     init(url: URL) {
         self.url = url
         let store = NoteFileStore(file: url, backupDirectory: LibraryLocation.backupDirectory())
-        let watcher = FileWatcher(url: store.singleFile ?? url)
+        let watcher = PathWatcher(url: store.singleFile ?? url)
         self.watcher = watcher
         library = Library(store: store, watcher: watcher)
         window = NSWindow(
@@ -39,7 +39,7 @@ final class FileSession: NSObject, NSWindowDelegate {
         window.minSize = NSSize(width: 420, height: 320)
         window.title = url.lastPathComponent
         window.representedURL = url
-        let host = NSHostingView(rootView: FileWindowView(library: library, windowState: windowState))
+        let host = NSHostingView(rootView: EditorPage(library: library, windowState: windowState).libraryErrorAlert(library))
         host.sizingOptions = []
         window.contentView = host
         window.delegate = self
@@ -78,16 +78,5 @@ final class FileSession: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         onClose?(self)
-    }
-}
-
-/// An opened file's window: just the page, no sidebar.
-struct FileWindowView: View {
-    let library: Library
-    let windowState: WindowState
-
-    var body: some View {
-        EditorPage(library: library, windowState: windowState)
-            .libraryErrorAlert(library)
     }
 }

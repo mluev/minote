@@ -23,18 +23,7 @@ struct RootView: View {
         } message: {
             Text("The file keeps this name instead of following its first line.")
         }
-        .alert(
-            library.presentedError?.title ?? "",
-            isPresented: Binding(
-                get: { library.presentedError != nil },
-                set: { if !$0 { library.presentedError = nil } }
-            ),
-            presenting: library.presentedError
-        ) { _ in
-            Button("OK") {}
-        } message: { error in
-            Text(error.message)
-        }
+        .libraryErrorAlert(library)
     }
 }
 
@@ -105,14 +94,7 @@ struct NotesList: View {
     }
 
     private func trash(_ note: Note) {
-        let undoManager = self.undoManager
-        Task {
-            guard let receipt = await library.moveToTrash(note.id), let undoManager else { return }
-            undoManager.registerUndo(withTarget: library) { library in
-                Task { @MainActor in await library.restore(receipt) }
-            }
-            undoManager.setActionName("Delete Note")
-        }
+        library.moveToTrash(note.id, undoManager: undoManager, actionName: "Delete Note")
     }
 }
 
@@ -121,7 +103,7 @@ struct MobileNoteRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(note.title.isEmpty ? "New Note" : note.title)
+            Text(note.displayTitle)
                 .font(.headline)
                 .foregroundStyle(note.title.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
@@ -145,32 +127,23 @@ struct EditorScreen: View {
     @Bindable var state: MobileState
     @Environment(\.horizontalSizeClass) private var sizeClass
 
-    @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
-    @AppStorage(PreferenceKey.fontSize) private var fontSize = 17.0
-    @AppStorage(PreferenceKey.focusEnabled) private var focusEnabled = false
-    @AppStorage(PreferenceKey.focusUnit) private var focusUnit = FocusMode.sentence
-    @AppStorage(PreferenceKey.typewriter) private var typewriter = false
-    @AppStorage(PreferenceKey.syntaxHighlight) private var syntaxHighlight = false
-    @AppStorage(PreferenceKey.showsSyntax) private var showsSyntax = false
+    private var preferences = EditorPreferences()
+
+    init(library: Library, state: MobileState) {
+        self.library = library
+        self.state = state
+    }
 
     var body: some View {
         MobileEditorView(
             library: library,
             state: state,
-            configuration: EditorConfiguration(
-                family: fontFamily,
-                size: fontSize,
-                focus: focusEnabled ? focusUnit : .off,
-                typewriter: typewriter,
-                partsOfSpeech: syntaxHighlight,
-                showsSyntax: showsSyntax,
-                preview: state.isPreviewing
-            ),
+            configuration: preferences.configuration(preview: state.isPreviewing),
             isWide: sizeClass == .regular
         )
         .ignoresSafeArea(.container, edges: .bottom)
         .background(Color(uiColor: EditorTheme.background))
-        .navigationTitle(library.selectedNote.map { $0.title.isEmpty ? "New Note" : $0.title } ?? "")
+        .navigationTitle(library.selectedNote?.displayTitle ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color(uiColor: EditorTheme.background), for: .navigationBar)
         .toolbar {
@@ -191,25 +164,25 @@ struct EditorScreen: View {
             Toggle("Preview", systemImage: "eye", isOn: $state.isPreviewing)
         }
         Section {
-            Toggle("Focus Mode", systemImage: "scope", isOn: $focusEnabled)
-            Picker("Focus On", selection: $focusUnit) {
+            Toggle("Focus Mode", systemImage: "scope", isOn: preferences.$focusEnabled)
+            Picker("Focus On", selection: preferences.$focusUnit) {
                 Text("Sentence").tag(FocusMode.sentence)
                 Text("Paragraph").tag(FocusMode.paragraph)
             }
-            Toggle("Typewriter Mode", systemImage: "text.aligncenter", isOn: $typewriter)
-            Toggle("Syntax Highlight", systemImage: "paintpalette", isOn: $syntaxHighlight)
-            Toggle("Show Markdown Syntax", systemImage: "number", isOn: $showsSyntax)
+            Toggle("Typewriter Mode", systemImage: "text.aligncenter", isOn: preferences.$typewriter)
+            Toggle("Syntax Highlight", systemImage: "paintpalette", isOn: preferences.$syntaxHighlight)
+            Toggle("Show Markdown Syntax", systemImage: "number", isOn: preferences.$showsSyntax)
         }
         Section {
-            Picker("Font", selection: $fontFamily) {
+            Picker("Font", selection: preferences.$fontFamily) {
                 ForEach(EditorFontFamily.allCases) { Text($0.displayName).tag($0) }
             }
             ControlGroup {
                 Button("Smaller", systemImage: "textformat.size.smaller") {
-                    fontSize = max(fontSize - 1, EditorTheme.fontSizeRange.lowerBound)
+                    preferences.fontSize = max(preferences.fontSize - 1, EditorTheme.fontSizeRange.lowerBound)
                 }
                 Button("Larger", systemImage: "textformat.size.larger") {
-                    fontSize = min(fontSize + 1, EditorTheme.fontSizeRange.upperBound)
+                    preferences.fontSize = min(preferences.fontSize + 1, EditorTheme.fontSizeRange.upperBound)
                 }
             }
         }
@@ -268,40 +241,7 @@ struct MobileCommands: Commands {
                 .disabled(library.selectedNote == nil)
         }
         CommandGroup(replacing: .textFormatting) {
-            format("Bold", .bold, "b")
-            format("Italic", .italic, "i")
-            format("Strikethrough", .strikethrough, "x", [.command, .shift])
-            format("Code", .inlineCode, "c", [.command, .option])
-            format("Link", .link, "k")
-            Divider()
-            Menu("Heading") {
-                ForEach(1...6, id: \.self) { level in
-                    format("Heading \(level)", .heading(level), KeyEquivalent(Character("\(level)")))
-                }
-                Divider()
-                format("Body Text", .heading(0))
-            }
-            format("Bulleted List", .bulletedList, "l")
-            format("Numbered List", .numberedList, "l", [.command, .option])
-            format("Task List", .taskList, "l", [.command, .shift])
-            format("Mark Task as Done", .toggleTaskDone, .return)
-            format("Quote", .blockquote, "'")
-            format("Code Block", .codeBlock, "b", [.command, .option])
-            format("Horizontal Rule", .horizontalRule)
-            Divider()
-            format("Shift Right", .shiftRight, "]")
-            format("Shift Left", .shiftLeft, "[")
-        }
-    }
-
-    @ViewBuilder
-    private func format(_ title: String, _ action: FormatAction, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
-        let button = Button(title) { state.editor?.perform(action) }
-            .disabled(!state.isEditorFocused)
-        if let key {
-            button.keyboardShortcut(key, modifiers: modifiers)
-        } else {
-            button
+            FormatMenuItems(isEnabled: state.isEditorFocused) { state.editor?.perform($0) }
         }
     }
 }
