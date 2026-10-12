@@ -31,6 +31,9 @@ final class TemporaryLibrary: @unchecked Sendable {
         }
     }
 
+    /// Where the stores keep copies of emptied notes.
+    var backups: URL { root.appendingPathComponent("Backups", isDirectory: true) }
+
     var fileNames: [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: notes.path)) ?? [])
             .filter { !$0.hasPrefix(".") }
@@ -93,6 +96,20 @@ extension LibraryTiming {
     static let fast = LibraryTiming(
         saveDebounce: .milliseconds(20),
         maxSaveLatency: .milliseconds(200),
+        rescanDebounce: .milliseconds(10),
+        retryDelay: .milliseconds(50)
+    )
+    /// Edits stay unsaved across a rescan, then save on their own.
+    static let slow = LibraryTiming(
+        saveDebounce: .milliseconds(300),
+        maxSaveLatency: .seconds(1),
+        rescanDebounce: .milliseconds(10),
+        retryDelay: .milliseconds(50)
+    )
+    /// Edits save only when asked to.
+    static let manual = LibraryTiming(
+        saveDebounce: .seconds(5),
+        maxSaveLatency: .seconds(10),
         rescanDebounce: .milliseconds(10),
         retryDelay: .milliseconds(50)
     )
