@@ -309,7 +309,10 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         statisticsTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard let self, !Task.isCancelled else { return }
-            self.state?.statistics = TextStatistics(self.textView.text)
+            let text: String = self.textView.text ?? ""
+            let statistics = await Task.detached(priority: .utility) { TextStatistics(text) }.value
+            guard !Task.isCancelled else { return }
+            self.state?.statistics = statistics
         }
     }
 

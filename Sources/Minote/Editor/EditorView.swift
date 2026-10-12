@@ -54,13 +54,25 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     private(set) var displayedNoteID: Note.ID?
     private var undoManagers: [Note.ID: UndoManager] = [:]
+    /// Notes shown in this window, most recent first. Only the latest few
+    /// keep their undo history: each holds every piece of text it replaced.
+    private var recentlyShown: [Note.ID] = []
+    private static let undoHistoryLimit = 10
     private var viewStates: [Note.ID: (selection: NSRange, scroll: NSPoint)] = [:]
     /// True while we replace the text ourselves (not a user edit).
     private var isReplacingText = false
     private var statisticsTask: Task<Void, Never>?
+    /// Bumped whenever the text changes, so the counter can tell a caret move
+    /// over the same text (nothing to recount) from an edit.
+    private var textRevision = 0
+    /// What the counter shows: the text revision and the selection it counted
+    /// (empty for the whole note).
+    private var counted: (revision: Int, selection: NSRange)?
     private var layoutInputs: (topInset: CGFloat, viewportHeight: CGFloat) = (0, 0)
 
     private let linkHint = LinkHintView()
+    /// The link the hint describes: moving along it changes nothing.
+    private var hintedLink: NSRange?
 
     var configuration: EditorConfiguration { engine.configuration }
 
@@ -106,6 +118,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let change = engine.apply(new, selection: textView.selectedRange())
         if change.contains(.preview) {
             textView.isEditable = displayedNoteID != nil && !new.preview
+            hintedLink = nil
             linkHint.show(address: nil, action: "")
             textView.resetHover()
             textView.needsCaretUpdate()
@@ -152,6 +165,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         }
         pruneState()
         displayedNoteID = note?.id
+        if let id = note?.id { rememberShown(id) }
         replaceText(with: note?.text ?? "")
         textView.isEditable = note != nil && !configuration.preview
 
@@ -232,6 +246,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     func textDidChange(_ notification: Notification) {
         guard !isReplacingText, let id = displayedNoteID else { return }
+        textRevision += 1
         library?.editorDidChange(noteID: id, prefix: textView.textPrefix())
         afterTextChange()
     }
@@ -276,22 +291,35 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         scheduleStatistics()
     }
 
-    /// Recounts after typing pauses: the selection if there is one, else the note.
+    /// Recounts after typing pauses: the selection if there is one, else the
+    /// note. Moving the caret over unchanged text counts nothing again, and
+    /// the counting itself happens off the main thread.
     private func scheduleStatistics() {
         guard windowState?.showsCounter == true else { return }
+        let target = Self.countedSelection(textView.selectedRange())
+        if let counted, counted.revision == textRevision, counted.selection == target { return }
         statisticsTask?.cancel()
         statisticsTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard let self, !Task.isCancelled, let storage = self.textView.textStorage else { return }
-            let selection = self.textView.selectedRange()
+            let selection = Self.countedSelection(self.textView.selectedRange())
+            let revision = self.textRevision
             let text = selection.length > 0 ? storage.mutableString.substring(with: selection) : self.textView.string
-            let statistics = TextStatistics(text)
+            let statistics = await Task.detached(priority: .utility) { TextStatistics(text) }.value
+            guard !Task.isCancelled else { return }
             self.windowState?.statistics = statistics
             self.windowState?.statisticsAreForSelection = selection.length > 0
+            self.counted = (revision, selection)
         }
     }
 
+    /// A caret counts the whole note, whichever line it's on.
+    private static func countedSelection(_ selection: NSRange) -> NSRange {
+        selection.length > 0 ? selection : NSRange(location: 0, length: 0)
+    }
+
     func refreshStatistics() {
+        counted = nil
         scheduleStatistics()
     }
 
@@ -313,6 +341,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         isReplacingText = true
         defer { isReplacingText = false }
         engine.prepareForNewText()
+        textRevision += 1
+        hintedLink = nil
         textView.string = text
         textView.typingAttributes = textView.styleSheet.baseAttributes
     }
@@ -335,6 +365,18 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let live = Set(library.notes.map(\.id))
         undoManagers = undoManagers.filter { live.contains($0.key) }
         viewStates = viewStates.filter { live.contains($0.key) }
+        recentlyShown.removeAll { !live.contains($0) }
+    }
+
+    /// Moves a note to the front of the recently shown ones and drops the
+    /// undo history of notes that fell off the end.
+    private func rememberShown(_ id: Note.ID) {
+        recentlyShown.removeAll { $0 == id }
+        recentlyShown.insert(id, at: 0)
+        for old in recentlyShown.dropFirst(Self.undoHistoryLimit) {
+            undoManagers[old] = nil
+        }
+        recentlyShown = Array(recentlyShown.prefix(Self.undoHistoryLimit))
     }
 }
 
@@ -412,7 +454,10 @@ extension EditorCoordinator: WriterTextViewInteraction {
     }
 
     func hoverChanged(linkAt index: Int?) {
-        guard let index, let link = engine.link(at: index) else {
+        let link = index.flatMap { engine.link(at: $0) }
+        guard link?.range != hintedLink else { return }
+        hintedLink = link?.range
+        guard let link else {
             linkHint.show(address: nil, action: "")
             return
         }

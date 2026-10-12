@@ -403,6 +403,7 @@ final class WriterTextView: NSTextView {
               selectedRange().length == 0, let rect = caretRect()
         else {
             caretView.isHidden = true
+            caretView.stopBlink()
             return
         }
         caretView.frame = rect
