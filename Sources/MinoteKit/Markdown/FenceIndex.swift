@@ -41,30 +41,22 @@ public struct FenceIndex: Sendable {
     public mutating func rebuild(_ text: NSString) {
         blocks.removeAll(keepingCapacity: true)
         fenceLines.removeAll(keepingCapacity: true)
-        let length = text.length
         var open: (start: Int, char: UInt16, length: Int)?
-        var location = 0
-        while location < length {
-            var lineEnd = 0, contentsEnd = 0
-            text.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-            if Self.mayBeFence(text, from: location, to: contentsEnd),
-               let fence = MarkdownLexer.fence(in: Self.characters(text, location..<contentsEnd)) {
-                let line = NSRange(location: location, length: lineEnd - location)
-                if let current = open {
-                    if fence.char == current.char, fence.length >= current.length, fence.isBare {
-                        blocks.append(NSRange(location: current.start, length: lineEnd - current.start))
-                        fenceLines.append(line)
-                        open = nil
-                    }
-                } else {
-                    open = (location, fence.char, fence.length)
-                    fenceLines.append(line)
-                }
+        text.forEachLine(in: NSRange(location: 0, length: text.length)) { start, contentsEnd, end, _ in
+            guard let fence = Self.fence(text, from: start, to: contentsEnd) else { return }
+            let line = NSRange(location: start, length: end - start)
+            if let current = open {
+                guard fence.char == current.char, fence.length >= current.length, fence.isBare else { return }
+                blocks.append(NSRange(location: current.start, length: end - current.start))
+                fenceLines.append(line)
+                open = nil
+            } else {
+                open = (start, fence.char, fence.length)
+                fenceLines.append(line)
             }
-            location = lineEnd
         }
         if let current = open {
-            blocks.append(NSRange(location: current.start, length: length - current.start))
+            blocks.append(NSRange(location: current.start, length: text.length - current.start))
         }
     }
 
@@ -88,9 +80,7 @@ public struct FenceIndex: Sendable {
         previous.shift(from: start, oldEnd: oldEnd, by: delta)
         rebuild(text)
 
-        let old = Set(previous.blocks.map { HashableRange($0) })
-        let new = Set(blocks.map { HashableRange($0) })
-        let changed = old.symmetricDifference(new).map(\.range)
+        let changed = Set(previous.blocks).symmetricDifference(blocks)
         guard var union = changed.first else { return nil }
         for range in changed.dropFirst() { union = NSUnionRange(union, range) }
         let clampedEnd = min(NSMaxRange(union), text.length)
@@ -114,45 +104,21 @@ public struct FenceIndex: Sendable {
     }
 
     private static func containsFenceLine(_ text: NSString, in range: NSRange) -> Bool {
-        var location = range.location
-        let end = NSMaxRange(range)
-        while location < end {
-            var lineEnd = 0, contentsEnd = 0
-            text.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-            if mayBeFence(text, from: location, to: contentsEnd),
-               MarkdownLexer.fence(in: characters(text, location..<contentsEnd)) != nil {
-                return true
-            }
-            if lineEnd <= location { break }
-            location = lineEnd
+        var found = false
+        text.forEachLine(in: range) { start, contentsEnd, _, stop in
+            found = fence(text, from: start, to: contentsEnd) != nil
+            stop = found
         }
-        return false
+        return found
     }
 
-    /// Cheap pre-check: up to three spaces, then ``` or ~~~.
-    private static func mayBeFence(_ text: NSString, from start: Int, to end: Int) -> Bool {
+    /// The fence on a line, after a cheap pre-check (up to three spaces, then ``` or ~~~).
+    private static func fence(_ text: NSString, from start: Int, to end: Int) -> (char: UInt16, length: Int, isBare: Bool)? {
         var i = start
-        while i < end, i - start < 3, text.character(at: i) == 0x20 { i += 1 }
-        guard i + 2 < end else { return false }
+        while i < end, i - start < 3, text.character(at: i) == .space { i += 1 }
+        guard i + 2 < end else { return nil }
         let c = text.character(at: i)
-        return (c == 0x60 || c == 0x7E) && text.character(at: i + 1) == c && text.character(at: i + 2) == c
+        guard (c == .backtick || c == .tilde) && text.character(at: i + 1) == c && text.character(at: i + 2) == c else { return nil }
+        return MarkdownLexer.fence(in: text.characters(in: start..<end))
     }
-
-    static func characters(_ text: NSString, _ range: Range<Int>) -> [UInt16] {
-        var buffer = [UInt16](repeating: 0, count: range.count)
-        text.getCharacters(&buffer, range: NSRange(location: range.lowerBound, length: range.count))
-        return buffer
-    }
-}
-
-private struct HashableRange: Hashable {
-    let location: Int
-    let length: Int
-
-    init(_ range: NSRange) {
-        location = range.location
-        length = range.length
-    }
-
-    var range: NSRange { NSRange(location: location, length: length) }
 }

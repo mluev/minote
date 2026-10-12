@@ -274,7 +274,7 @@ public enum MarkdownEditing {
         text.getLineStart(&start, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: min(location, text.length), length: 0))
         let line = NSRange(location: start, length: contentsEnd - start)
         guard line.length > 0 else { return nil }
-        let lexed = MarkdownLexer.lex(FenceIndex.characters(text, start..<contentsEnd), insideFence: false)
+        let lexed = MarkdownLexer.lex(text.characters(in: start..<contentsEnd), insideFence: false)
         switch lexed.kind {
         case .heading, .listItem, .taskItem, .blockquote:
             guard lexed.contentStart > 0 else { return nil }
@@ -294,7 +294,7 @@ public enum MarkdownEditing {
               let markup = hiddenMarkup(in: text, at: selection.location, insideFence: insideFence),
               selection.location == markup.home else { return nil }
         let start = markup.line.location
-        let lexed = MarkdownLexer.lex(FenceIndex.characters(text, start..<NSMaxRange(markup.line)), insideFence: false)
+        let lexed = MarkdownLexer.lex(text.characters(in: start..<NSMaxRange(markup.line)), insideFence: false)
         func removing(_ range: NSRange) -> TextEdit {
             let replacement = TextReplacement(range, "")
             return TextEdit([replacement], selection: NSRange(location: map(selection.location, through: [replacement], preferAfterInsertion: true), length: 0))
@@ -311,9 +311,9 @@ public enum MarkdownEditing {
                 return removing(NSRange(location: start + list.marker.lowerBound, length: lexed.contentStart - list.marker.lowerBound))
             }
             // One quote level: the first ">" and the space after it.
-            let units = FenceIndex.characters(text, start..<NSMaxRange(markup.line))
-            guard let first = units.firstIndex(of: 0x3E) else { return removing(markup.zone) }
-            let end = first + 1 < units.count && units[first + 1] == 0x20 ? first + 2 : first + 1
+            let units = text.characters(in: start..<NSMaxRange(markup.line))
+            guard let first = units.firstIndex(of: .greaterThan) else { return removing(markup.zone) }
+            let end = first + 1 < units.count && units[first + 1] == .space ? first + 2 : first + 1
             return removing(NSRange(location: start, length: end))
         default:
             return removing(markup.zone)
@@ -393,16 +393,10 @@ public enum MarkdownEditing {
     /// Lines touched by the selection, without their terminators.
     static func selectedLines(_ selection: NSRange, in text: NSString, skipBlank: Bool) -> [NSRange] {
         var lines: [NSRange] = []
-        let block = text.lineRange(for: selection)
-        var location = block.location
-        repeat {
-            var lineEnd = 0, contentsEnd = 0
-            text.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-            let line = NSRange(location: location, length: contentsEnd - location)
+        text.forEachLine(in: selection) { start, contentsEnd, _, _ in
+            let line = NSRange(location: start, length: contentsEnd - start)
             if !skipBlank || !text.substring(with: line).isBlank { lines.append(line) }
-            if lineEnd <= location { break }
-            location = lineEnd
-        } while location < NSMaxRange(block)
+        }
         return lines
     }
 
@@ -468,26 +462,27 @@ public enum MarkdownEditing {
     }
 
     private static func headingPrefix(of line: NSRange, in text: NSString) -> (level: Int, range: NSRange)? {
-        let chars = FenceIndex.characters(text, line.location..<NSMaxRange(line))
-        var i = 0
-        while i < chars.count, i < 3, chars[i] == .space { i += 1 }
-        let hashesStart = i
-        while i < chars.count, chars[i] == .hash { i += 1 }
-        let level = i - hashesStart
-        guard (1...6).contains(level), i == chars.count || chars[i] == .space || chars[i] == .tab else { return nil }
-        while i < chars.count, chars[i] == .space || chars[i] == .tab { i += 1 }
-        return (level, NSRange(location: line.location, length: i))
+        let lexed = MarkdownLexer.lex(text.characters(in: line.location..<NSMaxRange(line)), insideFence: false)
+        guard case .heading(let level) = lexed.kind else { return nil }
+        return (level, NSRange(location: line.location, length: lexed.contentStart))
     }
 
     private static func isFenceLine(_ line: NSRange, in text: NSString) -> Bool {
+        MarkdownLexer.fence(in: text.characters(in: line.location..<contentsEnd(of: line, in: text))) != nil
+    }
+
+    /// Where a line ends before its terminator.
+    static func contentsEnd(of line: NSRange, in text: NSString) -> Int {
         var end = NSMaxRange(line)
         while end > line.location, text.character(at: end - 1) == 0x0A || text.character(at: end - 1) == 0x0D { end -= 1 }
-        return MarkdownLexer.fence(in: FenceIndex.characters(text, line.location..<end)) != nil
+        return end
     }
 }
 
-/// The leading markup of one line: indentation, quote markers, list marker, task box.
+/// The leading markup of one line, as the lexer reads it: indentation, quote
+/// markers, list marker, task box.
 struct LinePrefix {
+    /// The line, without its terminator.
     let line: NSRange
     /// End of leading indentation.
     let indentEnd: Int
@@ -496,90 +491,43 @@ struct LinePrefix {
     /// List marker ("- ", "1. ", "- [ ] "), possibly empty, after quote markers.
     let listRange: NSRange
     let contentStart: Int
-    let contentsEnd: Int
-    let bullet: UInt16?
-    let number: Int?
-    let numberDelimiter: UInt16?
+    var contentsEnd: Int { NSMaxRange(line) }
+    let list: MarkdownListMarker?
+    /// The character inside a task's brackets.
     let taskBox: NSRange?
-    let taskDone: Bool
+    /// The bullet, or the number with its delimiter.
+    private let marker: String
 
     init(line lineRange: NSRange, in text: NSString) {
-        var contentsEnd = NSMaxRange(lineRange)
-        while contentsEnd > lineRange.location,
-              text.character(at: contentsEnd - 1) == 0x0A || text.character(at: contentsEnd - 1) == 0x0D {
-            contentsEnd -= 1
-        }
-        self.contentsEnd = contentsEnd
-        line = NSRange(location: lineRange.location, length: contentsEnd - lineRange.location)
-        let chars = FenceIndex.characters(text, line.location..<contentsEnd)
-        let base = line.location
-
-        var i = 0
-        while i < chars.count, chars[i] == .space || chars[i] == .tab { i += 1 }
-        indentEnd = base + i
-
-        let quoteStart = i
-        while i < chars.count, chars[i] == .greaterThan {
-            i += 1
-            if i < chars.count, chars[i] == .space { i += 1 }
-        }
-        quoteRange = NSRange(location: base + quoteStart, length: i - quoteStart)
-
-        let listStart = i
-        var bullet: UInt16?, number: Int?, delimiter: UInt16?
-        var j = i
-        if j < chars.count, chars[j] == .hyphen || chars[j] == .asterisk || chars[j] == .plus,
-           j + 1 == chars.count || chars[j + 1] == .space {
-            bullet = chars[j]
-            j += 1
-        } else {
-            var digits = 0
-            var value = 0
-            while j < chars.count, chars[j].isASCIIDigit, digits < 9 {
-                value = value * 10 + Int(chars[j] - 0x30)
-                j += 1
-                digits += 1
-            }
-            if digits > 0, j < chars.count, chars[j] == .period || chars[j] == .closeParen,
-               j + 1 == chars.count || chars[j + 1] == .space {
-                number = value
-                delimiter = chars[j]
-                j += 1
-            } else {
-                j = i
-            }
-        }
-        var taskBox: NSRange?
-        var taskDone = false
-        if bullet != nil || number != nil {
-            if j < chars.count, chars[j] == .space { j += 1 }
-            if j + 2 < chars.count, chars[j] == .openBracket, chars[j + 2] == .closeBracket,
-               chars[j + 1] == .space || chars[j + 1] == .lowercaseX || chars[j + 1] == .uppercaseX,
-               j + 3 == chars.count || chars[j + 3] == .space {
-                taskBox = NSRange(location: base + j + 1, length: 1)
-                taskDone = chars[j + 1] != .space
-                j += 3
-                if j < chars.count, chars[j] == .space { j += 1 }
-            }
-            i = j
-        }
-        self.bullet = bullet
-        self.number = number
-        numberDelimiter = delimiter
-        self.taskBox = taskBox
-        self.taskDone = taskDone
-        listRange = NSRange(location: base + listStart, length: i - listStart)
-        contentStart = base + i
+        let base = lineRange.location
+        let end = MarkdownEditing.contentsEnd(of: lineRange, in: text)
+        line = NSRange(location: base, length: end - base)
+        let chars = text.characters(in: base..<end)
+        let lexed = MarkdownLexer.lex(chars, insideFence: false)
+        let indent = chars.prefix { $0 == .space || $0 == .tab }.count
+        let quoteEnd = lexed.kind == .blockquote ? lexed.spans.first?.range.upperBound ?? indent : indent
+        let list = lexed.list
+        let listStart = list?.marker.lowerBound ?? quoteEnd
+        let content = list == nil ? listStart : lexed.contentStart
+        indentEnd = base + indent
+        quoteRange = NSRange(location: base + indent, length: quoteEnd - indent)
+        listRange = NSRange(location: base + listStart, length: content - listStart)
+        contentStart = base + content
+        taskBox = list?.taskBox.map { NSRange(location: base + $0.lowerBound + 1, length: 1) }
+        marker = list.map { String(decoding: chars[$0.marker], as: UTF16.self) } ?? ""
+        self.list = list
     }
 
-    var isListItem: Bool { bullet != nil || number != nil }
+    var isListItem: Bool { list != nil }
     var hasAnyMarker: Bool { isListItem || quoteRange.length > 0 }
-    var listMarkerWidth: Int { listRange.length - (taskBox != nil ? 4 : 0) }
+    var taskDone: Bool { list?.isDone == true }
+    /// The marker and the space after it, without the task box.
+    var listMarkerWidth: Int { (taskBox.map { $0.location - 1 } ?? contentStart) - listRange.location }
 
     func has(_ style: MarkdownEditing.LineStyle) -> Bool {
         switch style {
-        case .bullet: bullet != nil && taskBox == nil
-        case .numbered: number != nil
+        case .bullet: list?.ordered == false && taskBox == nil
+        case .numbered: list?.ordered == true
         case .task: taskBox != nil
         case .quote: quoteRange.length > 0
         }
@@ -589,10 +537,12 @@ struct LinePrefix {
     func continuationPrefix(in text: NSString) -> String {
         var prefix = text.substring(with: NSRange(location: line.location, length: indentEnd - line.location))
         prefix += text.substring(with: quoteRange)
-        if let bullet {
-            prefix += String(UnicodeScalar(UInt8(bullet))) + " "
-        } else if let number, let numberDelimiter {
-            prefix += "\(number + 1)" + String(UnicodeScalar(UInt8(numberDelimiter))) + " "
+        if let list {
+            if list.ordered, let number = Int(marker.dropLast()), let delimiter = marker.last {
+                prefix += "\(number + 1)\(delimiter) "
+            } else {
+                prefix += marker + " "
+            }
         }
         if taskBox != nil { prefix += "[ ] " }
         return prefix

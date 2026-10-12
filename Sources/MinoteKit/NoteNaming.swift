@@ -161,6 +161,14 @@ public enum NoteNaming {
     public static func isNoteFile(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
     }
+
+    /// The note an iCloud placeholder stands for: iCloud keeps notes that
+    /// aren't on this device yet as hidden ".Name.md.icloud" files.
+    static func placeholderTarget(_ name: String) -> String? {
+        guard name.hasPrefix("."), name.hasSuffix(".icloud") else { return nil }
+        let real = String(name.dropFirst().dropLast(".icloud".count))
+        return isNoteFile(URL(fileURLWithPath: real)) ? real : nil
+    }
 }
 
 extension StringProtocol {

@@ -10,6 +10,10 @@ public struct FileStamp: Sendable, Equatable {
         self.modified = modified
         self.size = size
     }
+
+    init(_ values: URLResourceValues) {
+        self.init(modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
+    }
 }
 
 /// One note file found by a scan.
@@ -96,15 +100,25 @@ public actor NoteFileStore {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    private static let scanKeys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+
     /// Lists every note file. Contents are read only for files whose stamp
     /// differs from `known`, so periodic rescans stay cheap.
     public func scan(known: [URL: FileStamp]) throws -> [ScannedFile] {
-        if let singleFile { return try scan(file: singleFile, known: known) }
+        if let singleFile {
+            // The opened file alone, or nothing while it's missing. Minote's naming
+            // tag is ignored: a file opened from elsewhere never follows its first
+            // line, even a copy of a note Minote created.
+            guard let values = try? URL(fileURLWithPath: singleFile.path).resourceValues(forKeys: Self.scanKeys),
+                  values.isRegularFile == true else { return [] }
+            let stamp = FileStamp(values)
+            let text = known[singleFile] == stamp ? nil : try readText(at: singleFile)
+            return [ScannedFile(url: singleFile, stamp: stamp, autoNameTag: nil, text: text)]
+        }
         try prepare()
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         let listing = try fileManager.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: keys,
+            includingPropertiesForKeys: Array(Self.scanKeys),
             options: [.skipsPackageDescendants, .skipsSubdirectoryDescendants]
         )
 
@@ -112,21 +126,17 @@ public actor NoteFileStore {
         for entry in listing {
             let name = entry.lastPathComponent
             if name.hasPrefix(".") {
-                // iCloud keeps notes that aren't on this device yet as hidden
-                // ".Name.md.icloud" placeholders: ask for the real file.
-                if isUbiquitous, name.hasSuffix(".icloud") {
-                    let real = String(name.dropFirst().dropLast(".icloud".count))
-                    if NoteNaming.isNoteFile(URL(fileURLWithPath: real)) {
-                        try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: real))
-                    }
+                // A note that isn't on this device yet: ask iCloud for it.
+                if isUbiquitous, let real = NoteNaming.placeholderTarget(name) {
+                    try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: real))
                 }
                 continue
             }
-            guard NoteNaming.isNoteFile(entry) else { continue }
-            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+            guard NoteNaming.isNoteFile(entry),
+                  let values = try? entry.resourceValues(forKeys: Self.scanKeys),
                   values.isRegularFile == true else { continue }
-            let url = fileURL(named: entry.lastPathComponent)
-            let stamp = FileStamp(modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
+            let url = fileURL(named: name)
+            let stamp = FileStamp(values)
             let tag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: url)
 
             if known[url] == stamp {
@@ -138,21 +148,10 @@ public actor NoteFileStore {
                 if isUbiquitous { preserveConflicts(of: url) }
                 files.append(ScannedFile(url: url, stamp: stamp, autoNameTag: tag, text: text))
             } catch {
-                logger.error("Skipping unreadable file \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                logger.error("Skipping unreadable file \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
         return files
-    }
-
-    /// The opened file alone, or nothing while it's missing. Minote's naming tag
-    /// is ignored: a file opened from elsewhere never follows its first line,
-    /// even a copy of a note Minote created.
-    private func scan(file url: URL, known: [URL: FileStamp]) throws -> [ScannedFile] {
-        guard let values = try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
-              values.isRegularFile == true else { return [] }
-        let stamp = FileStamp(modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
-        let text = known[url] == stamp ? nil : try readText(at: url)
-        return [ScannedFile(url: url, stamp: stamp, autoNameTag: nil, text: text)]
     }
 
     // MARK: Reading and writing
@@ -270,49 +269,47 @@ public actor NoteFileStore {
     /// (possibly unchanged) URL. Never overwrites another file.
     public func rename(_ url: URL, toBase base: String) throws -> URL {
         try requireFolder()
-        let ext = url.pathExtension
-        let current = url.deletingPathExtension().lastPathComponent
         let stem = NoteNaming.uniqueStem(base: base) { candidate in
-            let candidateURL = fileURL(stem: candidate, ext: ext)
+            let candidateURL = fileURL(stem: candidate, ext: url.pathExtension)
             return fileManager.fileExists(atPath: candidateURL.path) && !isSameFile(candidateURL, url)
         }
-        guard stem != current else { return url }
-
-        let destination = fileURL(stem: stem, ext: ext)
-        try move(url, to: destination, caseOnly: NoteNaming.stemsMatch(stem, current))
+        guard stem != url.deletingPathExtension().lastPathComponent else { return url }
+        let destination = try move(url, toStem: stem)
         tag(destination, with: stem)
         return destination
-    }
-
-    /// Renames without ever replacing another file, coordinated for iCloud.
-    private func move(_ source: URL, to destination: URL, caseOnly: Bool) throws {
-        try coordinate(moving: source, to: destination) { from, to in
-            let status = from.withUnsafeFileSystemRepresentation { src in
-                to.withUnsafeFileSystemRepresentation { dst -> Int32 in
-                    guard let src, let dst else { return -1 }
-                    // On a case-insensitive volume the destination of a case-only rename
-                    // "exists" (it's the same file), so exclusive rename would refuse it.
-                    return caseOnly ? Foundation.rename(src, dst) : renamex_np(src, dst, UInt32(RENAME_EXCL))
-                }
-            }
-            if status != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        }
     }
 
     /// A name the user chose: the file stops following its first line.
     /// Refuses to replace another file.
     public func renameManually(_ url: URL, to stem: String) throws -> URL {
         try requireFolder()
-        let ext = url.pathExtension
-        let destination = fileURL(stem: stem, ext: ext)
-        let current = url.deletingPathExtension().lastPathComponent
-        if stem != current {
-            if fileManager.fileExists(atPath: destination.path), !isSameFile(destination, url) {
-                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
-            }
-            try move(url, to: destination, caseOnly: NoteNaming.stemsMatch(stem, current))
+        let destination = fileURL(stem: stem, ext: url.pathExtension)
+        if fileManager.fileExists(atPath: destination.path), !isSameFile(destination, url) {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
         }
+        _ = try move(url, toStem: stem)
         ExtendedAttributes.remove(named: Self.autoNameAttribute, at: destination)
+        return destination
+    }
+
+    /// Renames the file to `stem`, keeping its extension, without ever
+    /// replacing another file; coordinated for iCloud.
+    private func move(_ url: URL, toStem stem: String) throws -> URL {
+        let current = url.deletingPathExtension().lastPathComponent
+        let destination = fileURL(stem: stem, ext: url.pathExtension)
+        guard stem != current else { return destination }
+        // On a case-insensitive volume the destination of a case-only rename
+        // "exists" (it's the same file), so an exclusive rename would refuse it.
+        let caseOnly = NoteNaming.stemsMatch(stem, current)
+        try coordinate(moving: url, to: destination) { from, to in
+            let status = from.withUnsafeFileSystemRepresentation { src in
+                to.withUnsafeFileSystemRepresentation { dst -> Int32 in
+                    guard let src, let dst else { return -1 }
+                    return caseOnly ? Foundation.rename(src, dst) : renamex_np(src, dst, UInt32(RENAME_EXCL))
+                }
+            }
+            if status != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
         return destination
     }
 
@@ -457,8 +454,7 @@ public actor NoteFileStore {
 
     /// Reads the stamp through a fresh URL so no cached resource values are used.
     private func stamp(of url: URL) throws -> FileStamp {
-        let values = try URL(fileURLWithPath: url.path).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-        return FileStamp(modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
+        try FileStamp(URL(fileURLWithPath: url.path).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]))
     }
 
     private func isSameFile(_ a: URL, _ b: URL) -> Bool {

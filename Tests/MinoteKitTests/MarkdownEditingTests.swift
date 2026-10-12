@@ -92,6 +92,14 @@ struct MarkdownEditingTests {
         #expect(run("plain|") { MarkdownEditing.toggleTaskDone(in: $0, selection: $1) } == nil)
     }
 
+    /// Lines are read the way the lexer draws them: extra spaces or a tab after a marker.
+    @Test func markersFollowedByMoreSpaceOrATab() {
+        #expect(run("-  [ ] milk|") { MarkdownEditing.toggleTaskDone(in: $0, selection: $1) } == "-  [x] milk|")
+        #expect(run("1.  [ ] milk|") { MarkdownEditing.newline(in: $0, selection: $1) } == "1.  [ ] milk\n2. [ ] |")
+        #expect(run("-\titem|") { MarkdownEditing.newline(in: $0, selection: $1) } == "-\titem\n- |")
+        #expect(run("[-\titem]") { MarkdownEditing.toggle(.bullet, in: $0, selection: $1) } == "[item]")
+    }
+
     @Test func codeBlocks() {
         #expect(run("[let x = 1]") { MarkdownEditing.toggleCodeBlock(in: $0, selection: $1) } == "```\n[let x = 1]\n```")
         #expect(run("```\n[let x = 1]\n```") { MarkdownEditing.toggleCodeBlock(in: $0, selection: $1) } == "[let x = 1]")

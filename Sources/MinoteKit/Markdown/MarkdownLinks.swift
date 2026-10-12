@@ -102,15 +102,11 @@ public enum MarkdownLinks {
     }
 
     private static func lineStart(in text: NSString, where matches: (String) -> Bool) -> Int? {
-        var location = 0
-        let length = text.length
-        while location < length {
-            var lineEnd = 0, contentsEnd = 0
-            text.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-            if matches(text.substring(with: NSRange(location: location, length: contentsEnd - location))) { return location }
-            if lineEnd <= location { break }
-            location = lineEnd
+        var found: Int?
+        text.forEachLine(in: NSRange(location: 0, length: text.length)) { start, contentsEnd, _, stop in
+            if matches(text.substring(with: NSRange(location: start, length: contentsEnd - start))) { found = start }
+            stop = found != nil
         }
-        return nil
+        return found
     }
 }

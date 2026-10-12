@@ -284,6 +284,17 @@ public final class Library {
         }.value
     }
 
+    /// Moves the note to the Trash and lets `undoManager` put it back.
+    public func moveToTrash(_ id: Note.ID, undoManager: UndoManager?, actionName: String) {
+        Task {
+            guard let receipt = await moveToTrash(id), let undoManager else { return }
+            undoManager.registerUndo(withTarget: self) { library in
+                Task { @MainActor in await library.restore(receipt) }
+            }
+            undoManager.setActionName(actionName)
+        }
+    }
+
     /// Puts a trashed note back and selects it.
     public func restore(_ receipt: TrashReceipt) async {
         let url: URL
@@ -398,6 +409,29 @@ public final class Library {
         }
     }
 
+    // MARK: Links
+
+    /// The note a relative link points to: `Other note.md`, `Other note`, or
+    /// `../Notes/Other note.md` all find the note whose file is "Other note.md".
+    public func note(linkedAs path: String) -> Note? {
+        let name = (path as NSString).lastPathComponent
+        guard !name.isEmpty else { return nil }
+        let stem = NoteNaming.isNoteFile(URL(fileURLWithPath: name)) ? (name as NSString).deletingPathExtension : name
+        return notes.first { $0.fileURL?.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
+            ?? notes.first { $0.fileStem?.caseInsensitiveCompare(stem) == .orderedSame }
+            ?? notes.first { $0.title.caseInsensitiveCompare(stem) == .orderedSame }
+    }
+
+    /// Follows a relative link: shows the note it names, or returns the file,
+    /// next to the open note, for another app to open.
+    public func followLink(to path: String) -> URL? {
+        if let note = note(linkedAs: path) {
+            selectedID = note.id
+            return nil
+        }
+        return selectedNote?.fileURL.map { URL(fileURLWithPath: path, relativeTo: $0.deletingLastPathComponent()) }
+    }
+
     // MARK: Selection
 
     private func selectionDidChange(from oldID: Note.ID?) {
@@ -495,20 +529,13 @@ public final class Library {
                         note.stamp = stamp
                         note.modified = stamp.modified
                     }
-                    note.savedRevision = max(note.savedRevision, revision)
-                    retryAttempts[note.id] = nil
                 } catch {
                     saveFailed(note, error)
                     return
                 }
             }
-        } else {
-            guard !text.isBlank else {
-                // Nothing worth a file yet.
-                note.savedRevision = max(note.savedRevision, revision)
-                updateSuddenTermination()
-                return
-            }
+        } else if !text.isBlank {
+            // A draft gets its file once it has something in it.
             do {
                 let base = NoteNaming.fileStem(forTitle: NoteNaming.title(of: text.prefix(NoteNaming.prefixLength)))
                 let saved = try await store.create(text: text, base: base)
@@ -517,14 +544,14 @@ public final class Library {
                 note.modified = saved.stamp.modified
                 note.autoNameTag = note.fileStem
                 note.refreshAutoNamed()
-                note.savedRevision = max(note.savedRevision, revision)
-                retryAttempts[note.id] = nil
                 if selectedID == note.id { persistSelection() }
             } catch {
                 saveFailed(note, error)
                 return
             }
         }
+        note.savedRevision = max(note.savedRevision, revision)
+        retryAttempts[note.id] = nil
 
         let editingTitle = editor?.displayedNoteID == note.id && editor?.isCaretInTitleLine == true
         if rename == .always || !editingTitle {
@@ -558,9 +585,8 @@ public final class Library {
         retryAttempts[note.id] = attempts
         logger.error("Save failed (attempt \(attempts)): \(error.localizedDescription, privacy: .public)")
         if attempts == 1 && !isTerminating {
-            let name = note.title.isEmpty ? "New Note" : note.title
             presentedError = LibraryError(
-                title: "Couldn't save “\(name)”",
+                title: "Couldn't save “\(note.displayTitle)”",
                 message: "\(error.localizedDescription)\n\nYour text is still in the window. Minote will keep trying to save it."
             )
         }
