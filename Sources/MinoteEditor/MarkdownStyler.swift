@@ -180,7 +180,7 @@ public final class MarkdownStyler {
         case .blockquote:
             if rendered {
                 let indent = CGFloat(max(1, line.quoteDepth)) * sheet.quoteIndent
-                storage.addAttribute(.foregroundColor, value: EditorTheme.quote, range: textRange)
+                storage.addAttribute(.foregroundColor, value: styleSheet.palette.quote, range: textRange)
                 hide(range(0..<(line.list?.marker.lowerBound ?? line.contentStart)), in: storage)
                 var headIndent = indent
                 if let list = line.list {
@@ -207,7 +207,7 @@ public final class MarkdownStyler {
             if rendered && reveal == nil {
                 hide(textRange, in: storage)
             } else {
-                storage.addAttribute(.foregroundColor, value: EditorTheme.syntax, range: textRange)
+                storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: textRange)
             }
             return
         case .thematicBreak:
@@ -215,7 +215,7 @@ public final class MarkdownStyler {
                 hide(textRange, in: storage)
                 storage.addAttribute(.minoteMark, value: MarkdownMark.rule.rawValue, range: textRange)
             } else {
-                storage.addAttribute(.foregroundColor, value: EditorTheme.syntax, range: textRange)
+                storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: textRange)
             }
             return
         default:
@@ -283,8 +283,8 @@ public final class MarkdownStyler {
         if rendered, let doneContent, !doneContent.isEmpty {
             storage.addAttributes([
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .strikethroughColor: EditorTheme.doneTask,
-                .foregroundColor: EditorTheme.doneTask,
+                .strikethroughColor: styleSheet.palette.doneTask,
+                .foregroundColor: styleSheet.palette.doneTask,
             ], range: range(doneContent))
         }
         if rendered, line.kind == .table {
@@ -294,7 +294,7 @@ public final class MarkdownStyler {
             // A reference's label is a quiet name, not a link.
             for span in line.spans where span.style == .link {
                 storage.removeAttribute(.underlineStyle, range: range(span.range))
-                storage.addAttribute(.foregroundColor, value: EditorTheme.syntax, range: range(span.range))
+                storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: range(span.range))
             }
         }
 
@@ -328,7 +328,7 @@ public final class MarkdownStyler {
             return width
         }
         if list.ordered {
-            storage.addAttribute(.foregroundColor, value: EditorTheme.listMarker, range: range(list.marker))
+            storage.addAttribute(.foregroundColor, value: styleSheet.palette.listMarker, range: range(list.marker))
         } else {
             storage.addAttributes([
                 .foregroundColor: PlatformColor.clear,
@@ -400,18 +400,18 @@ public final class MarkdownStyler {
             storage.addAttribute(.font, value: styleSheet.fonts.font(strong: strong, emphasis: emphasis), range: range)
         }
         if flags.contains(.syntax) || flags.contains(.destination) || (flags.contains(.url) && !rendered) {
-            storage.addAttribute(.foregroundColor, value: EditorTheme.syntax, range: range)
+            storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: range)
         }
         if flags.contains(.strikethrough), !flags.contains(.syntax) {
             storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
         }
         if rendered, flags.contains(.code) {
-            storage.addAttribute(.backgroundColor, value: EditorTheme.codeBackground, range: range)
+            storage.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: range)
         }
         if rendered, flags.contains(.link) || flags.contains(.url) {
             storage.addAttributes([
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-                .underlineColor: EditorTheme.linkUnderline,
+                .underlineColor: styleSheet.palette.linkUnderline,
             ], range: range)
         }
     }
@@ -435,7 +435,7 @@ public final class MarkdownStyler {
             storage.enumerateAttribute(.foregroundColor, in: range) { value, run, _ in
                 // Hidden markup stays hidden.
                 if (value as? PlatformColor) != PlatformColor.clear {
-                    storage.addAttribute(.foregroundColor, value: EditorTheme.faded, range: run)
+                    storage.addAttribute(.foregroundColor, value: styleSheet.palette.faded, range: run)
                 }
             }
         }

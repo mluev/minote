@@ -13,7 +13,7 @@ struct AppCommands: Commands {
     private var storage: LibraryStorageSwitcher { libraryWindow.storage }
     @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
     @AppStorage(PreferenceKey.fontSize) private var fontSize = EditorTheme.defaultFontSize
-    @AppStorage(PreferenceKey.appearance) private var appearance = AppearancePreference.system
+    @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
     @AppStorage(PreferenceKey.focusEnabled) private var focusEnabled = false
     @AppStorage(PreferenceKey.focusUnit) private var focusUnit = FocusMode.sentence
     @AppStorage(PreferenceKey.typewriter) private var typewriter = false
@@ -193,10 +193,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("0")
                 .disabled(fontSize == EditorTheme.defaultFontSize)
             Divider()
-            // Applied here too: the library window, which also applies it, may not be open.
-            Picker("Appearance", selection: Binding(get: { appearance }, set: { appearance = $0; NSApp.appearance = $0.nsAppearance })) {
-                ForEach(AppearancePreference.allCases) { preference in
-                    Text(preference.displayName).tag(preference)
+            Picker("Appearance", selection: Binding(get: { theme }, set: PageTheme.select)) {
+                ForEach(PageTheme.allCases) { theme in
+                    Text(theme.displayName).tag(theme)
                 }
             }
             Divider()

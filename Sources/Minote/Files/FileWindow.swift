@@ -35,12 +35,14 @@ final class FileSession: NSObject, NSWindowDelegate {
         window.tabbingMode = .disallowed
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.titlebarAppearsTransparent = true
-        window.backgroundColor = EditorTheme.background
+        window.backgroundColor = PageTheme.saved.palette.background
         window.minSize = NSSize(width: 420, height: 320)
         window.title = url.lastPathComponent
         window.representedURL = url
         let host = NSHostingView(rootView: FileWindowView(library: library, windowState: windowState))
         host.sizingOptions = []
+        // SwiftUI fills in the toolbar (the text settings button); the title stays the file's.
+        host.sceneBridgingOptions = [.toolbars]
         window.contentView = host
         window.delegate = self
     }

@@ -21,6 +21,8 @@ final class WindowState {
 
     /// View ▸ Preview: the note is read, not edited.
     var isPreviewing = false
+    /// The text settings popover (font, size, theme) is open.
+    var isShowingTextSettings = false
 
     /// The editor, for Format menu commands.
     @ObservationIgnored weak var editor: EditorCoordinator?

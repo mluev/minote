@@ -8,41 +8,10 @@ public typealias PlatformFont = UIFont
 public typealias PlatformColor = UIColor
 #endif
 
-/// Colors of the writing surface, shared by the Mac and iOS apps. Values were
-/// sampled from the iA Writer reference screenshots; each has a
-/// higher-contrast variant for the Increase Contrast accessibility setting.
+/// What the writing surface shares across palettes: the caret, the parts of
+/// speech, and the page's metrics. The page's own colors are in `EditorPalette`.
 public enum EditorTheme {
-    public static let background = dynamicColor(light: 0xF6F6F6, dark: 0x1B1B1B, name: "MinoteBackground")
-    public static let text = dynamicColor(light: 0x141414, dark: 0xD0D0D0, highContrastLight: 0x000000, highContrastDark: 0xF2F2F2, name: "MinoteText")
-    /// Markdown markup: `#`, `**`, brackets, URLs.
-    public static let syntax = dynamicColor(light: 0xA9A9A9, dark: 0x6B6B6B, highContrastLight: 0x6A6A6A, highContrastDark: 0x9C9C9C, name: "MinoteSyntax")
-    /// Text outside the focused sentence or paragraph.
-    public static let faded = dynamicColor(light: 0xBEBEBE, dark: 0x4D4D4D, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, name: "MinoteFaded")
-    public static let selection = dynamicColor(light: 0xBFE8F8, dark: 0x0C3247, name: "MinoteSelection")
-    /// Behind inline code and code blocks in rendered view.
-    public static let codeBackground = dynamicColor(light: 0xEBEBEB, dark: 0x262626, highContrastLight: 0xDDDDDD, highContrastDark: 0x333333, name: "MinoteCodeBackground")
-    /// Block quotes in rendered view.
-    public static let quote = dynamicColor(light: 0x5C5C5C, dark: 0xA3A3A3, highContrastLight: 0x333333, highContrastDark: 0xCFCFCF, name: "MinoteQuote")
-    /// Underline under link text in rendered view.
-    public static let linkUnderline = dynamicColor(light: 0x8FD4EF, dark: 0x2C6E8C, name: "MinoteLinkUnderline")
     public static let caret = PlatformColor(srgbHex: 0x01C2FC)
-    /// List bullets and numbers, and empty task boxes, in rendered view.
-    public static let listMarker = dynamicColor(light: 0x8A8A8A, dark: 0x858585, highContrastLight: 0x4D4D4D, highContrastDark: 0xBDBDBD, name: "MinoteListMarker")
-    /// A done task's box.
-    public static let checkboxDone = dynamicColor(light: 0x01A8DC, dark: 0x0596C4, highContrastLight: 0x00749A, highContrastDark: 0x3CC8F5, name: "MinoteCheckboxDone")
-    /// The text of a done task.
-    public static let doneTask = dynamicColor(light: 0x9A9A9A, dark: 0x6E6E6E, highContrastLight: 0x5E5E5E, highContrastDark: 0xA8A8A8, name: "MinoteDoneTask")
-    /// The bar beside a quote.
-    public static let quoteBar = dynamicColor(light: 0xD4D4D4, dark: 0x3D3D3D, highContrastLight: 0x8A8A8A, highContrastDark: 0x8A8A8A, name: "MinoteQuoteBar")
-    /// Rules and table lines.
-    public static let rule = dynamicColor(light: 0xD4D4D4, dark: 0x3A3A3A, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, name: "MinoteRule")
-
-    // The library list: the page's paper, a shade darker.
-    public static let sidebarBackground = dynamicColor(light: 0xEEEEEE, dark: 0x161616, highContrastLight: 0xE6E6E6, highContrastDark: 0x0E0E0E, name: "MinoteSidebarBackground")
-    /// Behind the selected note.
-    public static let sidebarSelection = dynamicColor(light: 0xE2E2E2, dark: 0x2A2A2A, highContrastLight: 0xCFCFCF, highContrastDark: 0x3A3A3A, name: "MinoteSidebarSelection")
-    /// Behind the note under the pointer.
-    public static let sidebarHover = dynamicColor(light: 0xE7E7E7, dark: 0x212121, highContrastLight: 0xDBDBDB, highContrastDark: 0x2A2A2A, name: "MinoteSidebarHover")
 
     // Parts of speech (Syntax Highlight).
     public static let adjective = dynamicColor(light: 0xB0731F, dark: 0xD9A04E, name: "MinoteAdjective")
@@ -67,7 +36,7 @@ public enum EditorTheme {
 
     // MARK: Helpers
 
-    private static func dynamicColor(light: UInt32, dark: UInt32, highContrastLight: UInt32? = nil, highContrastDark: UInt32? = nil, name: String) -> PlatformColor {
+    static func dynamicColor(light: UInt32, dark: UInt32, highContrastLight: UInt32? = nil, highContrastDark: UInt32? = nil, name: String) -> PlatformColor {
         #if os(macOS)
         return NSColor(name: name) { appearance in
             switch appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua]) {
@@ -89,6 +58,92 @@ public enum EditorTheme {
             }
         }
         #endif
+    }
+}
+
+/// The paper a light page is printed on. Dark pages are the same for both.
+public enum EditorPaper: String, CaseIterable, Sendable {
+    case standard, sepia
+}
+
+/// Colors of the writing surface, shared by the Mac and iOS apps. Values were
+/// sampled from the iA Writer reference screenshots (sepia: warm paper with
+/// brown ink, in the spirit of a book page); each has a higher-contrast variant
+/// for the Increase Contrast accessibility setting. One instance per paper,
+/// so a color's identity says which paper it belongs to.
+public struct EditorPalette: Sendable {
+    public let paper: EditorPaper
+    public let background: PlatformColor
+    public let text: PlatformColor
+    /// Markdown markup: `#`, `**`, brackets, URLs.
+    public let syntax: PlatformColor
+    /// Text outside the focused sentence or paragraph.
+    public let faded: PlatformColor
+    public let selection: PlatformColor
+    /// Behind inline code and code blocks in rendered view.
+    public let codeBackground: PlatformColor
+    /// Block quotes in rendered view.
+    public let quote: PlatformColor
+    /// Underline under link text in rendered view.
+    public let linkUnderline: PlatformColor
+    /// List bullets and numbers, and empty task boxes, in rendered view.
+    public let listMarker: PlatformColor
+    /// A done task's box.
+    public let checkboxDone: PlatformColor
+    /// The text of a done task.
+    public let doneTask: PlatformColor
+    /// The bar beside a quote.
+    public let quoteBar: PlatformColor
+    /// Rules and table lines.
+    public let rule: PlatformColor
+
+    // The library list: the page's paper, a shade darker.
+    public let sidebarBackground: PlatformColor
+    /// Behind the selected note.
+    public let sidebarSelection: PlatformColor
+    /// Behind the note under the pointer.
+    public let sidebarHover: PlatformColor
+
+    public static let standard = EditorPalette(paper: .standard)
+    public static let sepia = EditorPalette(paper: .sepia)
+
+    public static func of(_ paper: EditorPaper) -> EditorPalette {
+        switch paper {
+        case .standard: standard
+        case .sepia: sepia
+        }
+    }
+
+    private init(paper: EditorPaper) {
+        self.paper = paper
+        let isSepia = paper == .sepia
+        /// Sepia replaces the light values; dark pages don't change.
+        func color(_ name: String, light: UInt32, dark: UInt32, sepia: UInt32,
+                   highContrastLight: UInt32? = nil, highContrastDark: UInt32? = nil, highContrastSepia: UInt32? = nil) -> PlatformColor {
+            EditorTheme.dynamicColor(
+                light: isSepia ? sepia : light,
+                dark: dark,
+                highContrastLight: isSepia ? highContrastSepia : highContrastLight,
+                highContrastDark: highContrastDark,
+                name: "Minote" + name + (isSepia ? "Sepia" : "")
+            )
+        }
+        background = color("Background", light: 0xF6F6F6, dark: 0x1B1B1B, sepia: 0xF4ECDB)
+        text = color("Text", light: 0x141414, dark: 0xD0D0D0, sepia: 0x3A2C1E, highContrastLight: 0x000000, highContrastDark: 0xF2F2F2, highContrastSepia: 0x1E140A)
+        syntax = color("Syntax", light: 0xA9A9A9, dark: 0x6B6B6B, sepia: 0xAE9C80, highContrastLight: 0x6A6A6A, highContrastDark: 0x9C9C9C, highContrastSepia: 0x6E5C42)
+        faded = color("Faded", light: 0xBEBEBE, dark: 0x4D4D4D, sepia: 0xC9BA9E, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, highContrastSepia: 0x958468)
+        selection = color("Selection", light: 0xBFE8F8, dark: 0x0C3247, sepia: 0xE5D5AE)
+        codeBackground = color("CodeBackground", light: 0xEBEBEB, dark: 0x262626, sepia: 0xECE2CB, highContrastLight: 0xDDDDDD, highContrastDark: 0x333333, highContrastSepia: 0xE2D5BA)
+        quote = color("Quote", light: 0x5C5C5C, dark: 0xA3A3A3, sepia: 0x6A5640, highContrastLight: 0x333333, highContrastDark: 0xCFCFCF, highContrastSepia: 0x3E2F20)
+        linkUnderline = color("LinkUnderline", light: 0x8FD4EF, dark: 0x2C6E8C, sepia: 0x86BFD3)
+        listMarker = color("ListMarker", light: 0x8A8A8A, dark: 0x858585, sepia: 0x958165, highContrastLight: 0x4D4D4D, highContrastDark: 0xBDBDBD, highContrastSepia: 0x5C4A33)
+        checkboxDone = color("CheckboxDone", light: 0x01A8DC, dark: 0x0596C4, sepia: 0x01A8DC, highContrastLight: 0x00749A, highContrastDark: 0x3CC8F5, highContrastSepia: 0x00749A)
+        doneTask = color("DoneTask", light: 0x9A9A9A, dark: 0x6E6E6E, sepia: 0xA59379, highContrastLight: 0x5E5E5E, highContrastDark: 0xA8A8A8, highContrastSepia: 0x6A5940)
+        quoteBar = color("QuoteBar", light: 0xD4D4D4, dark: 0x3D3D3D, sepia: 0xDDCFB3, highContrastLight: 0x8A8A8A, highContrastDark: 0x8A8A8A, highContrastSepia: 0x9A896C)
+        rule = color("Rule", light: 0xD4D4D4, dark: 0x3A3A3A, sepia: 0xDDCFB3, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, highContrastSepia: 0x9A896C)
+        sidebarBackground = color("SidebarBackground", light: 0xEEEEEE, dark: 0x161616, sepia: 0xECE3CF, highContrastLight: 0xE6E6E6, highContrastDark: 0x0E0E0E, highContrastSepia: 0xE4D8BE)
+        sidebarSelection = color("SidebarSelection", light: 0xE2E2E2, dark: 0x2A2A2A, sepia: 0xE0D3B6, highContrastLight: 0xCFCFCF, highContrastDark: 0x3A3A3A, highContrastSepia: 0xCEBF9E)
+        sidebarHover = color("SidebarHover", light: 0xE7E7E7, dark: 0x212121, sepia: 0xE6DBC3, highContrastLight: 0xDBDBDB, highContrastDark: 0x2A2A2A, highContrastSepia: 0xD9CBAD)
     }
 }
 
@@ -156,11 +211,12 @@ public struct EditorFonts {
     }
 }
 
-/// Fonts and geometry for one font choice: line height, the centered column,
-/// and the margin gutter that heading markers hang into.
+/// Fonts, colors and geometry for one font and paper choice: line height, the
+/// centered column, and the margin gutter that heading markers hang into.
 public final class EditorStyleSheet {
     public let family: EditorFontFamily
     public let fonts: EditorFonts
+    public let palette: EditorPalette
     public let lineHeight: CGFloat
     /// Width of one `ch`.
     public let characterWidth: CGFloat
@@ -209,9 +265,10 @@ public final class EditorStyleSheet {
         }
     }
 
-    public init(family: EditorFontFamily, size: CGFloat, hangsMarkers: Bool = true) {
+    public init(family: EditorFontFamily, size: CGFloat, hangsMarkers: Bool = true, paper: EditorPaper = .standard) {
         self.family = family
         fonts = EditorFonts(family: family, size: size)
+        palette = .of(paper)
         let regular = fonts.regular
         lineHeight = (size * EditorTheme.lineHeightMultiple).rounded()
         characterWidth = ("0" as NSString).size(withAttributes: [.font: regular]).width
@@ -224,14 +281,20 @@ public final class EditorStyleSheet {
         // so -extra/2 centers the text, and with it the caret, in the line.
         let naturalHeight = regular.ascender - regular.descender
         baselineOffset = -(((lineHeight - naturalHeight) / 2) * 2).rounded() / 2
-        hiddenFont = PlatformFont(name: regular.fontName, size: 0.01) ?? regular
+        // By descriptor, not name: system faces (New York) can't be looked up
+        // by their private names, and the full-size fallback left gaps.
+        #if os(macOS)
+        hiddenFont = NSFont(descriptor: regular.fontDescriptor, size: 0.01) ?? regular
+        #else
+        hiddenFont = UIFont(descriptor: regular.fontDescriptor, size: 0.01)
+        #endif
         checkboxSize = (size * 0.8).rounded()
         quoteIndent = (max(characterWidth * 2, size * 1.1)).rounded()
         codeIndent = characterWidth.rounded()
 
         baseAttributes = [
             .font: regular,
-            .foregroundColor: EditorTheme.text,
+            .foregroundColor: palette.text,
             .paragraphStyle: paragraphStyle(firstLineIndent: 0, headIndent: 0),
             .baselineOffset: baselineOffset,
         ]
@@ -337,10 +400,13 @@ public struct EditorConfiguration: Equatable, Sendable {
     public var showsSyntax: Bool
     /// Preview: read-only, nothing reveals its markup, links open on click.
     public var preview: Bool
+    /// The paper of a light page.
+    public var paper: EditorPaper
 
-    public init(family: EditorFontFamily, size: Double, focus: FocusMode, typewriter: Bool, partsOfSpeech: Bool, showsSyntax: Bool = false, preview: Bool = false) {
+    public init(family: EditorFontFamily, size: Double, focus: FocusMode, typewriter: Bool, partsOfSpeech: Bool, showsSyntax: Bool = false, preview: Bool = false, paper: EditorPaper = .standard) {
         self.family = family
         self.size = size
+        self.paper = paper
         self.focus = focus
         self.typewriter = typewriter
         self.partsOfSpeech = partsOfSpeech

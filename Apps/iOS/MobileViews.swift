@@ -52,7 +52,7 @@ struct NotesList: View {
             ForEach(notes) { note in
                 MobileNoteRow(note: note)
                     .tag(note.id)
-                    .listRowBackground(sizeClass == .compact ? Color(uiColor: EditorTheme.background) : nil)
+                    .listRowBackground(sizeClass == .compact ? Color(uiColor: EditorPalette.standard.background) : nil)
                     .swipeActions {
                         Button("Delete", systemImage: "trash", role: .destructive) { trash(note) }
                     }
@@ -61,7 +61,7 @@ struct NotesList: View {
         }
         .modifier(LibraryListStyle(compact: sizeClass == .compact))
         .scrollContentBackground(sizeClass == .compact ? .hidden : .automatic)
-        .background(sizeClass == .compact ? Color(uiColor: EditorTheme.background) : .clear)
+        .background(sizeClass == .compact ? Color(uiColor: EditorPalette.standard.background) : .clear)
         .searchable(text: $library.searchText, prompt: "Search")
         .overlay {
             if notes.isEmpty && !library.searchText.isEmpty {
@@ -169,10 +169,10 @@ struct EditorScreen: View {
             isWide: sizeClass == .regular
         )
         .ignoresSafeArea(.container, edges: .bottom)
-        .background(Color(uiColor: EditorTheme.background))
+        .background(Color(uiColor: EditorPalette.standard.background))
         .navigationTitle(library.selectedNote.map { $0.title.isEmpty ? "New Note" : $0.title } ?? "")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color(uiColor: EditorTheme.background), for: .navigationBar)
+        .toolbarBackground(Color(uiColor: EditorPalette.standard.background), for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {

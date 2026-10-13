@@ -77,7 +77,7 @@ final class LibraryWindow: NSObject, NSWindowDelegate {
         window.toolbarStyle = .unified
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.backgroundColor = EditorTheme.background
+        window.backgroundColor = PageTheme.saved.palette.background
         window.minSize = NSSize(width: 520, height: 400)
         window.title = "Minote"
         let host = NSHostingView(rootView: ContentView(library: library, windowState: windowState))
