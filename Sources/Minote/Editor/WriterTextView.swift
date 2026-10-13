@@ -27,6 +27,9 @@ protocol WriterTextViewInteraction: AnyObject {
     func hoverChanged(linkAt index: Int?)
     /// Preview: a plain click follows links.
     var opensLinksOnClick: Bool { get }
+    /// Whether a point (window coordinates) is over the outline beside the
+    /// page, which sits above the text: the text then leaves the pointer alone.
+    func isPointerOverOutline(_ windowPoint: NSPoint) -> Bool
 }
 
 /// The writing surface: a plain-text TextKit 2 view with a centered column of
@@ -76,9 +79,7 @@ final class WriterTextView: NSTextView {
         inlinePredictionType = .no
 
         drawsBackground = true
-        backgroundColor = EditorTheme.background
         insertionPointColor = .clear
-        selectedTextAttributes = [.backgroundColor: EditorTheme.selection]
 
         isVerticallyResizable = true
         isHorizontallyResizable = false
@@ -93,9 +94,11 @@ final class WriterTextView: NSTextView {
         apply(styleSheet)
     }
 
-    /// Switches fonts and geometry. The caller restyles the text.
+    /// Switches fonts, paper and geometry. The caller restyles the text.
     func apply(_ styleSheet: EditorStyleSheet) {
         self.styleSheet = styleSheet
+        backgroundColor = styleSheet.palette.background
+        selectedTextAttributes = [.backgroundColor: styleSheet.palette.selection]
         typingAttributes = styleSheet.baseAttributes
         defaultParagraphStyle = styleSheet.baseAttributes[.paragraphStyle] as? NSParagraphStyle
         updateInsets()
@@ -282,6 +285,13 @@ final class WriterTextView: NSTextView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        // Tracking areas report moves under overlapping views too: over the
+        // outline, no link hover and no I-beam.
+        if interaction?.isPointerOverOutline(event.locationInWindow) == true {
+            setHoveredLink(nil)
+            isOverTaskBox = false
+            return
+        }
         super.mouseMoved(with: event)
         updateHover(event)
     }
@@ -298,7 +308,9 @@ final class WriterTextView: NSTextView {
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        if wantsPointingHand(event.modifierFlags) {
+        if interaction?.isPointerOverOutline(event.locationInWindow) == true {
+            NSCursor.arrow.set()
+        } else if wantsPointingHand(event.modifierFlags) {
             NSCursor.pointingHand.set()
         } else {
             super.cursorUpdate(with: event)
@@ -310,6 +322,24 @@ final class WriterTextView: NSTextView {
         isOverTaskBox = interaction?.taskBox(at: point) != nil
         setHoveredLink(isOverTaskBox ? nil : interaction?.linkIndex(at: point))
         updateCursor(event.modifierFlags)
+    }
+
+    /// The pointer came back to the page from the outline: what's under it
+    /// now decides the cursor again.
+    func restoreCursor() {
+        guard let window else { return }
+        let location = window.mouseLocationOutsideOfEventStream
+        let point = convert(location, from: nil)
+        guard visibleRect.contains(point) else { return }
+        let container = CGPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        isOverTaskBox = interaction?.taskBox(at: container) != nil
+        setHoveredLink(isOverTaskBox ? nil : interaction?.linkIndex(at: container))
+        let flags = NSEvent.modifierFlags
+        if wantsPointingHand(flags) {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
     }
 
     /// Forgets what's under the pointer (after switching to or from Preview).

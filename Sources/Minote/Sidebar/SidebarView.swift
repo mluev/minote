@@ -12,6 +12,7 @@ struct SidebarView: View {
     @FocusState private var isListFocused: Bool
     @FocusState private var isSearchFocused: Bool
     @ViewState private var hoveredID: Note.ID? = nil
+    @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
 
     var body: some View {
         let notes = library.visibleNotes
@@ -19,7 +20,7 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(notes) { note in
-                        NoteRow(note: note, isSelected: note.id == library.selectedID, isHovered: note.id == hoveredID)
+                        NoteRow(note: note, palette: theme.palette, isSelected: note.id == library.selectedID, isHovered: note.id == hoveredID)
                             .id(note.id)
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -44,7 +45,7 @@ struct SidebarView: View {
                 proxy.scrollTo(id)
             }
         }
-        .background(Color(nsColor: EditorTheme.sidebarBackground).ignoresSafeArea())
+        .background(Color(nsColor: theme.palette.sidebarBackground).ignoresSafeArea())
         .focusable()
         .focusEffectDisabled()
         .focused($isListFocused)
@@ -123,6 +124,7 @@ struct SidebarView: View {
 /// plate when selected or under the pointer.
 struct NoteRow: View {
     let note: Note
+    let palette: EditorPalette
     var isSelected = false
     var isHovered = false
 
@@ -130,17 +132,17 @@ struct NoteRow: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(note.title.isEmpty ? "New Note" : note.title)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color(nsColor: note.title.isEmpty ? EditorTheme.syntax : EditorTheme.text))
+                .foregroundStyle(Color(nsColor: note.title.isEmpty ? palette.syntax : palette.text))
                 .lineLimit(1)
             if !note.excerpt.isEmpty {
                 Text(note.excerpt)
                     .font(.system(size: 12))
-                    .foregroundStyle(Color(nsColor: EditorTheme.quote))
+                    .foregroundStyle(Color(nsColor: palette.quote))
                     .lineLimit(2)
             }
             Text(NoteDateText.string(for: note.modified))
                 .font(.system(size: 11))
-                .foregroundStyle(Color(nsColor: EditorTheme.syntax))
+                .foregroundStyle(Color(nsColor: palette.syntax))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -148,7 +150,7 @@ struct NoteRow: View {
         .background {
             if isSelected || isHovered {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: isSelected ? EditorTheme.sidebarSelection : EditorTheme.sidebarHover))
+                    .fill(Color(nsColor: isSelected ? palette.sidebarSelection : palette.sidebarHover))
             }
         }
         .accessibilityElement(children: .combine)

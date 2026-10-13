@@ -6,6 +6,10 @@ import MinoteEditor
 final class LinkHintView: NSView {
     private let label = NSTextField(labelWithString: "")
     private(set) var text = ""
+    /// The page's colors, which the hint's plate is tinted from.
+    var palette = EditorPalette.standard {
+        didSet { needsDisplay = true }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -37,7 +41,7 @@ final class LinkHintView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func updateLayer() {
-        layer?.backgroundColor = EditorTheme.background.blended(withFraction: 0.06, of: .labelColor)?.cgColor
+        layer?.backgroundColor = palette.background.blended(withFraction: 0.06, of: .labelColor)?.cgColor
         layer?.borderColor = NSColor.separatorColor.cgColor
     }
 

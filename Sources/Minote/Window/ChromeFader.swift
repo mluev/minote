@@ -100,3 +100,35 @@ struct WindowAccessor: NSViewRepresentable {
         }
     }
 }
+
+/// Keeps the hosting window's background on the page's paper: it shows
+/// behind the transparent titlebar and while the window resizes.
+struct WindowBackground: NSViewRepresentable {
+    let color: NSColor
+
+    func makeNSView(context: Context) -> BackgroundView {
+        let view = BackgroundView()
+        view.color = color
+        return view
+    }
+
+    func updateNSView(_ view: BackgroundView, context: Context) {
+        view.color = color
+    }
+
+    final class BackgroundView: NSView {
+        var color: NSColor? {
+            didSet { applyColor() }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyColor()
+        }
+
+        private func applyColor() {
+            guard let color, let window, window.backgroundColor != color else { return }
+            window.backgroundColor = color
+        }
+    }
+}

@@ -44,8 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
-        let appearance = UserDefaults.standard.string(forKey: PreferenceKey.appearance).flatMap(AppearancePreference.init(rawValue:))
-        NSApp.appearance = appearance?.nsAppearance
+        PageTheme.applySaved()
         openedFiles.libraryWindow = libraryWindow
         openedFiles.refreshRecents()
     }

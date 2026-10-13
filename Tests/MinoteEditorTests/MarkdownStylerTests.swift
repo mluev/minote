@@ -40,7 +40,7 @@ struct MarkdownStylerTests {
         let text = "**one** plain _two_\n**three**"
         let (storage, _) = styled(text, reveal: NSRange(location: 3, length: 0))  // inside "one"
         #expect(!isHidden(storage, at: 0))                               // ** around "one": shown
-        #expect(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == EditorTheme.syntax)
+        #expect(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == EditorPalette.standard.syntax)
         #expect(!isHidden(storage, at: 5))
         #expect(isHidden(storage, at: 14))                               // _ around "two": hidden
         #expect(isHidden(storage, at: 20))                               // other line: hidden
@@ -105,7 +105,7 @@ struct MarkdownStylerTests {
 
     @Test func numbersStayAsText() {
         let (storage, _) = styled("1. one")
-        #expect(color(storage, at: 0) == EditorTheme.listMarker)
+        #expect(color(storage, at: 0) == EditorPalette.standard.listMarker)
         #expect(mark(storage, at: 0) == nil)
     }
 
@@ -115,7 +115,7 @@ struct MarkdownStylerTests {
         #expect(isHidden(storage, at: 2) && isHidden(storage, at: 4) && isHidden(storage, at: 5))
         #expect(mark(storage, at: 11) == .checkbox(done: true))
         #expect(storage.attribute(.strikethroughStyle, at: 17, effectiveRange: nil) != nil)
-        #expect(color(storage, at: 17) == EditorTheme.doneTask)
+        #expect(color(storage, at: 17) == EditorPalette.standard.doneTask)
     }
 
     @Test func quotesHideTheirMarkerAndGetABar() {
@@ -151,7 +151,7 @@ struct MarkdownStylerTests {
         let (storage, _) = styled("- [ ] a\n> q", showsSyntax: true)
         #expect(mark(storage, at: 0) == nil)
         #expect(block(storage, at: 8) == nil)
-        #expect(color(storage, at: 0) == EditorTheme.syntax)
+        #expect(color(storage, at: 0) == EditorPalette.standard.syntax)
     }
 
     @Test func linksShowOnlyTheirText() {
@@ -184,7 +184,14 @@ struct MarkdownStylerTests {
         #expect(isHidden(storage, at: 0))
         #expect(storage.attribute(.minoteFaded, at: 2, effectiveRange: nil) != nil)
         #expect(storage.attribute(.minoteFaded, at: 7, effectiveRange: nil) == nil)
-        #expect(storage.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor == EditorTheme.faded)
-        #expect(storage.attribute(.foregroundColor, at: 6, effectiveRange: nil) as? NSColor != EditorTheme.faded)
+        #expect(storage.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor == EditorPalette.standard.faded)
+        #expect(storage.attribute(.foregroundColor, at: 6, effectiveRange: nil) as? NSColor != EditorPalette.standard.faded)
+    }
+
+    @Test(arguments: EditorFontFamily.allCases)
+    func hiddenMarkupTakesNoRoomInEveryFont(_ family: EditorFontFamily) {
+        let sheet = EditorStyleSheet(family: family, size: 18)
+        // New York's private name doesn't resolve: a lookup by name fell back to full size.
+        #expect(sheet.hiddenFont.pointSize < 1)
     }
 }

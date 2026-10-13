@@ -163,7 +163,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
 
         context.saveGState()
         if case .code(let top, let bottom)? = block {
-            drawCodeBox(in: column, top: top, bottom: bottom, context: context)
+            drawCodeBox(in: column, top: top, bottom: bottom, sheet: sheet, context: context)
         }
         context.restoreGState()
 
@@ -231,7 +231,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
 
     private func drawMark(_ mark: PlacedMark, in rect: CGRect, line: CGRect, baseline: CGFloat, column: CGRect, sheet: EditorStyleSheet, context: CGContext) {
         let faded = mark.faded
-        let markerColor = cgColor(faded ? EditorTheme.faded : EditorTheme.listMarker)
+        let markerColor = cgColor(faded ? sheet.palette.faded : sheet.palette.listMarker)
         switch mark.kind {
         case .bullet(let level):
             let diameter = (sheet.fonts.regular.pointSize * 0.3).rounded()
@@ -255,14 +255,14 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
             let box = CGRect(x: rect.minX, y: (center - size / 2).rounded(), width: size, height: size)
             let radius = size * 0.24
             if done {
-                context.setFillColor(cgColor(faded ? EditorTheme.faded : EditorTheme.checkboxDone))
+                context.setFillColor(cgColor(faded ? sheet.palette.faded : sheet.palette.checkboxDone))
                 context.addPath(CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil))
                 context.fillPath()
                 let check = CGMutablePath()
                 check.move(to: CGPoint(x: box.minX + size * 0.26, y: box.minY + size * 0.52))
                 check.addLine(to: CGPoint(x: box.minX + size * 0.43, y: box.minY + size * 0.69))
                 check.addLine(to: CGPoint(x: box.minX + size * 0.75, y: box.minY + size * 0.33))
-                context.setStrokeColor(cgColor(EditorTheme.background))
+                context.setStrokeColor(cgColor(sheet.palette.background))
                 context.setLineWidth(max(1.5, size * 0.12))
                 context.setLineCap(.round)
                 context.setLineJoin(.round)
@@ -276,19 +276,19 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
                 context.strokePath()
             }
         case .rule:
-            context.setFillColor(cgColor(EditorTheme.rule))
+            context.setFillColor(cgColor(sheet.palette.rule))
             context.fill(CGRect(x: column.minX, y: (line.midY - 0.5).rounded(), width: column.width, height: 1))
         case .tablePipe:
-            context.setFillColor(cgColor(EditorTheme.rule))
+            context.setFillColor(cgColor(sheet.palette.rule))
             context.fill(CGRect(x: (rect.midX - 0.5).rounded(), y: line.minY, width: 1, height: line.height))
         case .tableRule:
-            context.setFillColor(cgColor(EditorTheme.rule))
+            context.setFillColor(cgColor(sheet.palette.rule))
             context.fill(CGRect(x: rect.minX, y: (line.midY - 0.5).rounded(), width: rect.width, height: 1))
         }
     }
 
     private func drawQuoteBars(depth: Int, column: CGRect, sheet: EditorStyleSheet, faded: Bool, context: CGContext) {
-        context.setFillColor(cgColor(faded ? EditorTheme.faded : EditorTheme.quoteBar))
+        context.setFillColor(cgColor(faded ? sheet.palette.faded : sheet.palette.quoteBar))
         let width = max(2, (sheet.fonts.regular.pointSize * 0.14).rounded())
         for level in 0..<max(1, depth) {
             let x = column.minX + CGFloat(level) * sheet.quoteIndent + 1
@@ -296,7 +296,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         }
     }
 
-    private func drawCodeBox(in column: CGRect, top: Bool, bottom: Bool, context: CGContext) {
+    private func drawCodeBox(in column: CGRect, top: Bool, bottom: Bool, sheet: EditorStyleSheet, context: CGContext) {
         let radius: CGFloat = 6
         let rect = column
         let path = CGMutablePath()
@@ -317,7 +317,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
             path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         }
         path.closeSubpath()
-        context.setFillColor(cgColor(EditorTheme.codeBackground))
+        context.setFillColor(cgColor(sheet.palette.codeBackground))
         context.addPath(path)
         context.fillPath()
     }

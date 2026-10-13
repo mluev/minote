@@ -105,4 +105,60 @@ struct EditorTextEngineTests {
         #expect(copy.hasPrefix("• a\n☑ [x] b"))
         #expect(copy.contains("─"))
     }
+
+    @Test func sepiaPaperRestylesTheWholeNote() {
+        let (engine, storage) = engine("> quote\n\n- item\n\nplain `code`")
+        let string = storage.string as NSString
+        let body = string.range(of: "plain").location, code = string.range(of: "code").location
+        #expect(storage.attribute(.foregroundColor, at: body, effectiveRange: nil) as? NSColor == EditorPalette.standard.text)
+
+        var sepia = engine.configuration
+        sepia.paper = .sepia
+        let change = engine.apply(sepia, selection: NSRange(location: 0, length: 0))
+        #expect(change.contains(.styleSheet))
+        #expect(engine.styleSheet.palette.paper == .sepia)
+        #expect(storage.attribute(.foregroundColor, at: body, effectiveRange: nil) as? NSColor == EditorPalette.sepia.text)
+        #expect(storage.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor == EditorPalette.sepia.quote)
+        #expect(storage.attribute(.backgroundColor, at: code, effectiveRange: nil) as? NSColor == EditorPalette.sepia.codeBackground)
+    }
+
+    @Test func printingUsesStandardInkOnSepia() {
+        let (engine, storage) = engine("plain\n- item")
+        var sepia = engine.configuration
+        sepia.paper = .sepia
+        engine.apply(sepia, selection: NSRange(location: 0, length: 0))
+
+        let copy = engine.printableCopy()
+        #expect(copy.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == EditorPalette.standard.text)
+        #expect(copy.attribute(.foregroundColor, at: 6, effectiveRange: nil) as? NSColor == EditorPalette.standard.listMarker)
+        // The screen keeps its paper.
+        #expect(engine.styleSheet.palette.paper == .sepia)
+        #expect(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == EditorPalette.sepia.text)
+    }
+
+    @Test func theOutlineFollowsCodeFencesAsTheyAreEdited() {
+        let (engine, storage) = engine("# One\n# Two\n# Three")
+        #expect(engine.outline().map(\.title) == ["One", "Two", "Three"])
+        // Opening a fence before "Two" turns the rest into code.
+        storage.replaceCharacters(in: NSRange(location: 6, length: 0), with: "```\n")
+        #expect(engine.outline().map(\.title) == ["One"])
+        // Closing it brings "Three" back.
+        storage.replaceCharacters(in: NSRange(location: storage.length - 7, length: 0), with: "```\n")
+        #expect(engine.outline().map(\.title) == ["One", "Three"])
+        #expect(engine.outline().last?.contentLocation == (storage.string as NSString).range(of: "Three").location)
+    }
+
+    @Test func sepiaChangesOnlyLightPages() {
+        func resolved(_ color: NSColor, _ name: NSAppearance.Name) -> NSColor? {
+            var result: NSColor?
+            NSAppearance(named: name)?.performAsCurrentDrawingAppearance { result = color.usingColorSpace(.sRGB) }
+            return result
+        }
+        let standard = EditorPalette.standard, sepia = EditorPalette.sepia
+        #expect(resolved(standard.background, .aqua) != resolved(sepia.background, .aqua))
+        #expect(resolved(standard.text, .aqua) != resolved(sepia.text, .aqua))
+        #expect(resolved(standard.background, .darkAqua) == resolved(sepia.background, .darkAqua))
+        #expect(resolved(standard.text, .darkAqua) == resolved(sepia.text, .darkAqua))
+        #expect(EditorPalette.of(.sepia).background === sepia.background)
+    }
 }

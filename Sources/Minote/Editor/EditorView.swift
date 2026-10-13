@@ -49,7 +49,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     weak var library: Library?
     weak var windowState: WindowState?
     let textView: WriterTextView
-    let scrollView: NSScrollView
+    let scrollView: EditorScrollView
     private let engine: EditorTextEngine
 
     private(set) var displayedNoteID: Note.ID?
@@ -73,6 +73,11 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     private let linkHint = LinkHintView()
     /// The link the hint describes: moving along it changes nothing.
     private var hintedLink: NSRange?
+    /// The headings beside the page, in Preview.
+    let outline: OutlineController
+    /// Set while the outline moves the caret: Typewriter mode mustn't center
+    /// it, the outline places the page itself.
+    private var suppressesTypewriterCentering = false
 
     var configuration: EditorConfiguration { engine.configuration }
 
@@ -84,9 +89,11 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     init(configuration: EditorConfiguration) {
         textView = WriterTextView(usingTextLayoutManager: true)
-        scrollView = EditorScrollView()
+        let scrollView = EditorScrollView()
+        self.scrollView = scrollView
         textView.setUp()
         engine = EditorTextEngine(storage: textView.textStorage!, configuration: configuration)
+        outline = OutlineController(textView: textView, scrollView: scrollView, engine: engine)
         super.init()
 
         engine.attach(to: textView.textLayoutManager)
@@ -103,12 +110,20 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = EditorTheme.background
+        scrollView.backgroundColor = engine.styleSheet.palette.background
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.findBarPosition = .aboveContent
         scrollView.documentView = textView
 
-        (scrollView as? EditorScrollView)?.overlay = linkHint
+        scrollView.overlay = linkHint
+        linkHint.palette = engine.styleSheet.palette
+
+        outline.moveCaret = { [weak self] location in self?.moveHiddenCaret(to: location) }
+        outline.isTypewriter = { [weak self] in self?.configuration.typewriter ?? false }
+        outline.bottomReserve = { [weak self] in self?.windowState?.showsCounter == true ? 40 : 12 }
+        outline.hasNote = { [weak self] in self?.displayedNoteID != nil }
+        outline.onPointerLeft = { [weak self] in self?.textView.restoreCursor() }
+        outline.setPreviewing(configuration.preview)
     }
 
     // MARK: Configuration and layout
@@ -122,10 +137,14 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             linkHint.show(address: nil, action: "")
             textView.resetHover()
             textView.needsCaretUpdate()
+            outline.setPreviewing(new.preview)
         }
         if change.contains(.styleSheet) {
             textView.apply(engine.styleSheet)
+            scrollView.backgroundColor = engine.styleSheet.palette.background
+            linkHint.palette = engine.styleSheet.palette
             relayoutViewport()
+            outline.styleDidChange(paper: engine.styleSheet.palette.paper)
         }
         if change.contains(.styleSheet) || change.contains(.typewriter) {
             updateLayout(topInset: layoutInputs.topInset, viewportHeight: layoutInputs.viewportHeight, force: true)
@@ -179,6 +198,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         relayoutViewport()
         textView.needsCaretUpdate()
         afterTextChange()
+        outline.noteDidChange()
     }
 
     func currentText() -> String {
@@ -194,6 +214,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         scroll(to: origin)
         relayoutViewport()
         afterTextChange()
+        outline.textDidChange()
     }
 
     /// Called for a new note: start typing (leaving Preview).
@@ -249,13 +270,22 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textRevision += 1
         library?.editorDidChange(noteID: id, prefix: textView.textPrefix())
         afterTextChange()
+        if configuration.preview { outline.textDidChange() }
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !isReplacingText else { return }
         engine.selectionDidChange(textView.selectedRange())
-        if NSApp.currentEvent?.type != .leftMouseDragged { centerCaretIfNeeded() }
+        if !suppressesTypewriterCentering, NSApp.currentEvent?.type != .leftMouseDragged { centerCaretIfNeeded() }
         scheduleStatistics()
+    }
+
+    /// Puts the caret at a heading the outline went to, without scrolling:
+    /// hidden in Preview, it is where writing continues after.
+    private func moveHiddenCaret(to location: Int) {
+        suppressesTypewriterCentering = true
+        defer { suppressesTypewriterCentering = false }
+        textView.setSelectedRange(clamped(NSRange(location: location, length: 0)))
     }
 
     /// Each note keeps its own undo history for the session.
@@ -451,6 +481,10 @@ extension EditorCoordinator: WriterTextViewInteraction {
             if !configuration.preview { textView.setSelectedRange(target) }
             textView.scrollRangeToVisible(target)
         }
+    }
+
+    func isPointerOverOutline(_ windowPoint: NSPoint) -> Bool {
+        outline.containsPointer(windowPoint: windowPoint)
     }
 
     func hoverChanged(linkAt index: Int?) {

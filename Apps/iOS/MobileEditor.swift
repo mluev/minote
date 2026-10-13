@@ -369,7 +369,7 @@ final class MobileTextView: UITextView {
     var onOutdent: (() -> Void)?
 
     func setUp(styleSheet: EditorStyleSheet) {
-        backgroundColor = EditorTheme.background
+        backgroundColor = EditorPalette.standard.background
         tintColor = EditorTheme.caret
         textContainer.lineFragmentPadding = 0
         alwaysBounceVertical = true

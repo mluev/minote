@@ -2,6 +2,7 @@
 import AppKit
 import MinoteEditor
 import MinoteKit
+import SwiftUI
 
 /// Drives the editor from outside, for interaction tests of debug builds.
 /// Real NSEvents go through the window, so clicks, keys and hovering take the
@@ -18,10 +19,19 @@ import MinoteKit
 ///   select <location> <length>
 ///   state                     selection, caret, text and the cursor
 ///   snapshot <path>           PNG of the window contents
+///   snapshotpanel <path>      PNG of the text settings popover
+///   snapshotwindow <title> <path>   PNG of another window, by title
 ///   config <key> <value>      showsSyntax|preview true|false
 ///   appearance dark|light     (not saved)
+///   theme system|light|sepia|dark   (saved: put it back after)
+///   panel true|false          the text settings popover
+///   toolbar                   every window's toolbar items and where they sit
 ///   pref <key> true|false|remove
 ///   scroll <y>
+///   outline                   the outline beside the page (Preview)
+///   outlinehover <i|rail|off> move the pointer over a heading's dash or row, or away
+///   outlineclick <i>          click a heading in the card (opening it first)
+///   outlinefilm <path> [dark|sepia|light]   PNG strip of the morph, rail to card
 @MainActor
 enum DebugDriver {
     private static var timer: Timer?
@@ -117,6 +127,70 @@ enum DebugDriver {
             textView.enclosingScrollView?.reflectScrolledClipView(textView.enclosingScrollView!.contentView)
         case "appearance":
             NSApp.appearance = NSAppearance(named: rest == "dark" ? .darkAqua : .aqua)
+        case "theme":
+            guard let theme = PageTheme(rawValue: rest) else { return "error: bad theme" }
+            PageTheme.select(theme)
+        case "panel":
+            windowState.isShowingTextSettings = rest == "true"
+        case "toolbar":
+            return NSApp.windows.filter { $0.isVisible && $0.toolbar != nil }.map { window in
+                "window \"\(window.title)\" width \(window.frame.width) background \(window.backgroundColor.description)\n" + (window.toolbar?.items ?? []).map { item in
+                    let frame = item.view.map { $0.convert($0.bounds, to: nil) } ?? .zero
+                    return "  \(item.itemIdentifier.rawValue) \(item.label) \(frame)"
+                }.joined(separator: "\n")
+            }.joined(separator: "\n")
+        case "snapshotwindow":
+            guard words.count == 2, let other = NSApp.windows.first(where: { $0.isVisible && $0.title == words[0] }) else { return "error: no such window" }
+            try? await Task.sleep(for: .milliseconds(150))
+            return snapshot(other, to: words[1])
+        case "snapshotpanel":
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let popover = NSApp.windows.first(where: { $0.isVisible && NSStringFromClass(type(of: $0)).contains("Popover") }) else { return "error: no popover" }
+            return snapshot(popover, to: rest)
+        case "outline":
+            try? await Task.sleep(for: .milliseconds(150))
+            return outlineState(editor)
+        case "outlinehover":
+            let outline = editor.outline
+            guard let overlay = outline.overlayView, let layout = outline.model.layout else { return "error: no outline" }
+            let point: CGPoint
+            switch rest {
+            case "off":
+                point = CGPoint(x: 0, y: 0)
+            case "rail":
+                point = CGPoint(x: layout.railRect.midX, y: layout.railRect.midY)
+            default:
+                guard let index = Int(rest), let rect = outline.itemRect(index) else { return "error: bad index" }
+                point = CGPoint(x: rect.midX, y: rect.midY)
+            }
+            moveMouse(to: point, in: overlay, textView: textView)
+            try? await Task.sleep(for: .milliseconds(700))
+            return outlineState(editor)
+        case "outlineclick":
+            let outline = editor.outline
+            guard let overlay = outline.overlayView, let index = Int(rest) else { return "error: no outline" }
+            if !outline.isCardOpen, let rect = outline.itemRect(index) {
+                moveMouse(to: CGPoint(x: rect.midX, y: rect.midY), in: overlay, textView: textView)
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+            guard let row = outline.itemRect(index) else { return "error: bad index" }
+            let point = CGPoint(x: row.midX, y: row.midY)
+            let windowPoint = overlay.convert(point, to: nil)
+            let hit = window.contentView?.hitTest(windowPoint)
+            lastHit = hit.map { String(describing: type(of: $0)) } ?? "nil"
+            guard hit === overlay else { return "error: the click would land on \(lastHit)" }
+            let time = ProcessInfo.processInfo.systemUptime
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(with: type, location: windowPoint, modifierFlags: [], timestamp: time,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                                     pressure: type == .leftMouseDown ? 1 : 0) else { continue }
+                if type == .leftMouseDown { overlay.mouseDown(with: event) } else { overlay.mouseUp(with: event) }
+            }
+            try? await Task.sleep(for: .milliseconds(900))
+            return outlineState(editor) + "\n" + state(textView, editor: editor)
+        case "outlinefilm":
+            guard let path = words.first else { return "error: no path" }
+            return outlineFilm(editor, to: path, look: words.count > 1 ? words[1] : "light")
         case "probe":
             guard let index = Int(words.first ?? ""), let point = center(of: index, in: textView) else { return "error: bad index" }
             let origin = textView.textContainerOrigin
@@ -182,6 +256,86 @@ enum DebugDriver {
             }
         }
         return flags
+    }
+
+    /// Sends a mouse move to the outline and to the text under it, as AppKit does.
+    private static func moveMouse(to point: CGPoint, in overlay: OutlineOverlayView, textView: WriterTextView) {
+        guard let window = overlay.window else { return }
+        let location = overlay.convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0) else { return }
+        if point == .zero {
+            overlay.mouseExited(with: event)
+        } else {
+            overlay.mouseMoved(with: event)
+        }
+        textView.mouseMoved(with: event)
+    }
+
+    private static func outlineState(_ editor: EditorCoordinator) -> String {
+        let outline = editor.outline
+        let model = outline.model
+        let clip = editor.scrollView.contentView
+        var lines = [
+            "shown: \(model.isShown) open: \(outline.isCardOpen) progress: \(model.progress) gliding: \(outline.isGliding)",
+            "active: \(model.active.map(String.init) ?? "-") pinned: \(outline.pinnedIndex.map(String.init) ?? "-") plate: \(model.plate.map(String.init) ?? "-") \(model.plateStrength)",
+            "origin: \(model.origin) listOffset: \(model.listOffset)",
+            "overlay: \(outline.overlayView.map { "\($0.frame) interactive \($0.interactiveRect)" } ?? "none")",
+            "clipOrigin: \(clip.bounds.minY) topPadding: \(editor.textView.topPadding) inset: \(editor.scrollView.contentInsets.top)",
+        ]
+        if let layout = model.layout {
+            lines.append("layout: hidden \(layout.isHidden) dashes \(layout.dashRange) spacing \(layout.dashSpacing) scale \(layout.dashScale) rail \(layout.railRect) card \(layout.cardRect)")
+        }
+        for (index, heading) in model.headings.enumerated() {
+            lines.append("  [\(index)] h\(heading.level) \(heading.title.debugDescription) @\(heading.location)/\(heading.contentLocation)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The morph from rail to card, frame by frame, on the page's paper.
+    private static func outlineFilm(_ editor: EditorCoordinator, to path: String, look: String) -> String {
+        let model = editor.outline.model
+        guard let layout = model.layout else { return "error: no outline layout" }
+        let paper: EditorPaper = look == "sepia" ? .sepia : .standard
+        let palette = EditorPalette.of(paper)
+        let appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)!
+        let crop = layout.cardRect.union(layout.railRect).insetBy(dx: -24, dy: -24)
+        let steps = Array(stride(from: 0.0, through: 1.0, by: 0.1))
+        let columns = 4
+        let scale: CGFloat = 2
+        let cell = CGSize(width: crop.width, height: crop.height)
+        let rows = (steps.count + columns - 1) / columns
+        let size = CGSize(width: cell.width * CGFloat(columns), height: cell.height * CGFloat(rows))
+        guard let context = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return "error: context" }
+        var paperColor = palette.background.cgColor
+        appearance.performAsCurrentDrawingAppearance { paperColor = palette.background.cgColor }
+        context.setFillColor(paperColor)
+        context.fill(CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale))
+        for (number, progress) in steps.enumerated() {
+            let view = OutlineRailView(layout: layout, titles: model.titles, ids: model.ids, active: model.active, plate: nil, plateStrength: 0,
+                                       progress: progress, origin: model.origin, listOffset: layout.listOffset(placing: model.origin),
+                                       reduceMotion: model.reduceMotion, palette: palette)
+                .frame(width: layout.cardRect.maxX + 40, height: crop.maxY + 40, alignment: .topLeading)
+                .offset(x: -crop.minX, y: -crop.minY)
+                .frame(width: cell.width, height: cell.height, alignment: .topLeading)
+                .clipped()
+                .environment(\.colorScheme, look == "dark" ? .dark : .light)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = scale
+            var image: CGImage?
+            appearance.performAsCurrentDrawingAppearance { image = renderer.cgImage }
+            guard let image else { return "error: render" }
+            let column = number % columns, row = number / columns
+            let x = CGFloat(column) * cell.width * scale
+            let y = (size.height - CGFloat(row + 1) * cell.height) * scale
+            context.draw(image, in: CGRect(x: x, y: y, width: CGFloat(image.width), height: CGFloat(image.height)))
+        }
+        guard let strip = context.makeImage() else { return "error: image" }
+        let rep = NSBitmapImageRep(cgImage: strip)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return "error: png" }
+        do { try data.write(to: URL(fileURLWithPath: path)) } catch { return "error: \(error)" }
+        return "film: \(path) frames \(steps.count) cell \(cell)"
     }
 
     // MARK: Inspection

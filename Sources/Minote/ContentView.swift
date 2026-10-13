@@ -17,7 +17,6 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         } detail: {
             EditorPage(library: library, windowState: windowState, onUserEdit: { fader.userDidType() })
-                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
         .navigationTitle(windowTitle)
         .background(WindowAccessor { window in configure(window) })
@@ -40,7 +39,6 @@ struct ContentView: View {
     }
 
     private func configure(_ window: NSWindow) {
-        window.backgroundColor = EditorTheme.background
         window.titlebarAppearsTransparent = true
         window.tabbingMode = .disallowed
         fader.attach(to: window)

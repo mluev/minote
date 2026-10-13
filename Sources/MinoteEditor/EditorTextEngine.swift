@@ -36,7 +36,7 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         self.storage = storage
         self.configuration = configuration
         self.hangsMarkers = hangsMarkers
-        styler = MarkdownStyler(styleSheet: EditorStyleSheet(family: configuration.family, size: CGFloat(configuration.size), hangsMarkers: hangsMarkers))
+        styler = MarkdownStyler(styleSheet: EditorStyleSheet(family: configuration.family, size: CGFloat(configuration.size), hangsMarkers: hangsMarkers, paper: configuration.paper))
         styler.highlightsPartsOfSpeech = configuration.partsOfSpeech
         styler.showsSyntax = !configuration.rendersMarkdown
         layoutDelegate = MarkdownLayoutDelegate(styleSheet: styler.styleSheet)
@@ -72,8 +72,8 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         if let hangsMarkers { self.hangsMarkers = hangsMarkers }
         var change: Change = []
 
-        if new.family != old.family || new.size != old.size || self.hangsMarkers != oldHangs {
-            styler.styleSheet = EditorStyleSheet(family: new.family, size: CGFloat(new.size), hangsMarkers: self.hangsMarkers)
+        if new.family != old.family || new.size != old.size || new.paper != old.paper || self.hangsMarkers != oldHangs {
+            styler.styleSheet = EditorStyleSheet(family: new.family, size: CGFloat(new.size), hangsMarkers: self.hangsMarkers, paper: new.paper)
             layoutDelegate.styleSheet = styler.styleSheet
             change.insert(.styleSheet)
         }
@@ -115,17 +115,23 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         storage.endEditing()
     }
 
-    /// A copy for printing or exporting: fully styled, without Focus fading.
+    /// A copy for printing or exporting: fully styled, without Focus fading,
+    /// in standard ink (the sheet of paper is real; sepia is for the screen).
     public func printableCopy() -> NSAttributedString {
         guard let storage else { return NSAttributedString() }
         let copy = NSTextStorage(attributedString: storage)
-        let focus = styler.focusRange, reveal = styler.revealRange
+        let focus = styler.focusRange, reveal = styler.revealRange, screenSheet = styler.styleSheet
         styler.focusRange = nil
         styler.revealRange = nil
+        if screenSheet.palette.paper != .standard {
+            styler.styleSheet = EditorStyleSheet(family: configuration.family, size: CGFloat(configuration.size), hangsMarkers: hangsMarkers)
+        }
+        let printSheet = styler.styleSheet
         styler.style(copy, range: NSRange(location: 0, length: copy.length), fences: fences)
         styler.focusRange = focus
         styler.revealRange = reveal
-        Self.replaceDrawnMarkup(in: copy, styleSheet: styler.styleSheet)
+        styler.styleSheet = screenSheet
+        Self.replaceDrawnMarkup(in: copy, styleSheet: printSheet)
         return copy
     }
 
@@ -136,11 +142,11 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         copy.beginEditing()
         copy.enumerateAttribute(.minoteBlock, in: all) { value, run, _ in
             guard let raw = value as? String, case .code? = MarkdownBlock(rawValue: raw) else { return }
-            copy.addAttribute(.backgroundColor, value: EditorTheme.codeBackground, range: run)
+            copy.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: run)
         }
         copy.enumerateAttribute(.minoteMark, in: all, options: .reverse) { value, run, _ in
             guard let raw = value as? String, let mark = MarkdownMark(rawValue: raw) else { return }
-            let visible: [NSAttributedString.Key: Any] = [.font: styleSheet.fonts.regular, .foregroundColor: EditorTheme.listMarker]
+            let visible: [NSAttributedString.Key: Any] = [.font: styleSheet.fonts.regular, .foregroundColor: styleSheet.palette.listMarker]
             switch mark {
             case .bullet(let level):
                 copy.replaceCharacters(in: run, with: NSAttributedString(string: ["•", "◦", "▪"][level % 3], attributes: copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }))
@@ -321,6 +327,12 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
     private func isInsideFence(_ location: Int, in text: NSString) -> Bool {
         let lineStart = text.lineRange(for: NSRange(location: min(location, text.length), length: 0)).location
         return fences.contains(lineStart)
+    }
+
+    /// The note's headings, as the rendered page shows them (none inside code blocks).
+    public func outline() -> [OutlineHeading] {
+        guard let storage else { return [] }
+        return MarkdownOutline.headings(in: storage.mutableString, fences: fences)
     }
 
     /// The link at a character, and all of its markup.
