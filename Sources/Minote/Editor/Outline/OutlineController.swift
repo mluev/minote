@@ -70,6 +70,10 @@ final class OutlineController {
     }
 
     isolated deinit {
+        // A glide's display link and event monitor would outlive the window.
+        glide?.cancel()
+        expandTask?.cancel()
+        collapseTask?.cancel()
         if let reduceMotionObserver { NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver) }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }

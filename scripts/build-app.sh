@@ -41,12 +41,13 @@ BINARY="$(swift build -c "$CONFIG" ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)/Mi
 
 # Never replace the bundle under a running copy: quit it first, through AppKit
 # (not kill) so pending saves are flushed. Matched by path: an iOS simulator
-# runs its own "Minote" process.
-RUNNING="$PWD/$APP/Contents/MacOS/$PRODUCT_NAME"
-if pgrep -qf "^$RUNNING"; then
+# runs its own "Minote" process. Launched by absolute or relative path (the
+# debug driver is started as build/Minote.app/...).
+RUNNING="^($PWD/)?$APP/Contents/MacOS/$PRODUCT_NAME"
+if pgrep -qf "$RUNNING"; then
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-  for _ in {1..100}; do pgrep -qf "^$RUNNING" || break; sleep 0.1; done
-  if pgrep -qf "^$RUNNING"; then
+  for _ in {1..100}; do pgrep -qf "$RUNNING" || break; sleep 0.1; done
+  if pgrep -qf "$RUNNING"; then
     echo "Minote is still running (unsaved changes?). Quit it, then build again." >&2
     exit 1
   fi

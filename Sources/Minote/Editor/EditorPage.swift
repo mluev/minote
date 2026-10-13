@@ -53,6 +53,8 @@ struct EditorPage: View {
         .onChange(of: showCounter, initial: true) { _, shows in
             windowState.showsCounter = shows
             if shows { windowState.editor?.refreshStatistics() }
+            // The outline keeps clear of the counter.
+            windowState.editor?.outline.setNeedsUpdate()
         }
     }
 
