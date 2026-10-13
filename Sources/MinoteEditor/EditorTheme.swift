@@ -31,7 +31,11 @@ public enum EditorTheme {
     public static let caretWidthRatio: CGFloat = 0.15
     public static let caretHeightRatio: CGFloat = 1.45
 
+    #if os(macOS)
     public static let defaultFontSize: Double = 18
+    #else
+    public static let defaultFontSize: Double = 17
+    #endif
     public static let fontSizeRange: ClosedRange<Double> = 12...32
 
     // MARK: Helpers
@@ -256,7 +260,7 @@ public final class EditorStyleSheet {
     }
 
     /// Rendered view sets headings larger; the source view keeps one size, like iA.
-    public static func headingScale(_ level: Int) -> CGFloat {
+    private static func headingScale(_ level: Int) -> CGFloat {
         switch level {
         case 1: 1.6
         case 2: 1.35

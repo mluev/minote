@@ -27,26 +27,3 @@ final class WindowState {
     /// The editor, for Format menu commands.
     @ObservationIgnored weak var editor: EditorCoordinator?
 }
-
-/// User actions reachable from more than one place (menus, context menus, keys).
-enum NoteActions {
-    /// Moves a note to the Trash and registers "Undo Move to Trash".
-    static func moveToTrash(_ id: Note.ID, in library: Library, undoManager: UndoManager?) {
-        Task {
-            guard let receipt = await library.moveToTrash(id), let undoManager else { return }
-            undoManager.registerUndo(withTarget: library) { library in
-                Task { @MainActor in await library.restore(receipt) }
-            }
-            undoManager.setActionName("Move to Trash")
-        }
-    }
-
-    static func revealInFinder(_ note: Note?) {
-        guard let url = note?.fileURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    static func openLibraryFolder(_ library: Library) {
-        NSWorkspace.shared.open(library.directory)
-    }
-}

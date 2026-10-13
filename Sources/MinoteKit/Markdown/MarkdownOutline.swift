@@ -31,20 +31,13 @@ public enum MarkdownOutline {
     public static func headings(in text: NSString, fences: FenceIndex) -> [OutlineHeading] {
         var headings: [OutlineHeading] = []
         var occurrences: [String: Int] = [:]
-        let length = text.length
-        var location = 0
-        while location < length {
-            var lineEnd = 0, contentsEnd = 0
-            text.getLineStart(nil, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
-            if mayBeHeading(text, from: location, to: contentsEnd), !fences.contains(location),
-               let heading = heading(text, from: location, to: contentsEnd) {
-                let occurrence = occurrences[heading.title, default: 0]
-                occurrences[heading.title] = occurrence + 1
-                headings.append(OutlineHeading(id: "\(heading.title)\u{1F}\(occurrence)", level: heading.level, title: heading.title,
-                                               location: location, contentLocation: location + heading.contentStart))
-            }
-            if lineEnd <= location { break }
-            location = lineEnd
+        text.forEachLine(in: NSRange(location: 0, length: text.length)) { start, contentsEnd, _, _ in
+            guard mayBeHeading(text, from: start, to: contentsEnd), !fences.contains(start),
+                  let heading = heading(text, from: start, to: contentsEnd) else { return }
+            let occurrence = occurrences[heading.title, default: 0]
+            occurrences[heading.title] = occurrence + 1
+            headings.append(OutlineHeading(id: "\(heading.title)\u{1F}\(occurrence)", level: heading.level, title: heading.title,
+                                           location: start, contentLocation: start + heading.contentStart))
         }
         return headings
     }
@@ -79,7 +72,7 @@ public enum MarkdownOutline {
     }
 
     private static func heading(_ text: NSString, from start: Int, to end: Int) -> (level: Int, title: String, contentStart: Int)? {
-        let chars = FenceIndex.characters(text, start..<end)
+        let chars = text.characters(in: start..<end)
         let line = MarkdownLexer.lex(chars, insideFence: false)
         guard case .heading(let level) = line.kind else { return nil }
         // What the page shows: everything after the hashes but the markup

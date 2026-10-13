@@ -10,22 +10,22 @@ struct EditorPage: View {
     let windowState: WindowState
     var onUserEdit: () -> Void = {}
 
-    @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
-    @AppStorage(PreferenceKey.fontSize) private var fontSize = EditorTheme.defaultFontSize
-    @AppStorage(PreferenceKey.focusEnabled) private var focusEnabled = false
-    @AppStorage(PreferenceKey.focusUnit) private var focusUnit = FocusMode.sentence
-    @AppStorage(PreferenceKey.typewriter) private var typewriter = false
-    @AppStorage(PreferenceKey.syntaxHighlight) private var syntaxHighlight = false
+    private var preferences = EditorPreferences()
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
-    @AppStorage(PreferenceKey.showsSyntax) private var showsSyntax = false
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
+
+    init(library: Library, windowState: WindowState, onUserEdit: @escaping () -> Void = {}) {
+        self.library = library
+        self.windowState = windowState
+        self.onUserEdit = onUserEdit
+    }
 
     var body: some View {
         GeometryReader { proxy in
             EditorView(
                 library: library,
                 windowState: windowState,
-                configuration: configuration,
+                configuration: preferences.configuration(preview: windowState.isPreviewing, paper: theme.paper),
                 topInset: proxy.safeAreaInsets.top,
                 viewportHeight: proxy.size.height + proxy.safeAreaInsets.top,
                 onUserEdit: onUserEdit
@@ -55,37 +55,6 @@ struct EditorPage: View {
             if shows { windowState.editor?.refreshStatistics() }
             // The outline keeps clear of the counter.
             windowState.editor?.outline.setNeedsUpdate()
-        }
-    }
-
-    private var configuration: EditorConfiguration {
-        EditorConfiguration(
-            family: fontFamily,
-            size: fontSize,
-            focus: focusEnabled ? focusUnit : .off,
-            typewriter: typewriter,
-            partsOfSpeech: syntaxHighlight,
-            showsSyntax: showsSyntax,
-            preview: windowState.isPreviewing,
-            paper: theme.paper
-        )
-    }
-}
-
-extension View {
-    /// Shows the library's problems (a failed save, an unreadable file) as alerts.
-    func libraryErrorAlert(_ library: Library) -> some View {
-        alert(
-            library.presentedError?.title ?? "",
-            isPresented: Binding(
-                get: { library.presentedError != nil },
-                set: { if !$0 { library.presentedError = nil } }
-            ),
-            presenting: library.presentedError
-        ) { _ in
-            Button("OK") {}
-        } message: { error in
-            Text(error.message)
         }
     }
 }

@@ -30,18 +30,16 @@ struct EditorTextEngineTests {
         #expect(engine.adjustedSelection(NSRange(location: 5, length: 3), previous: nil) == NSRange(location: 5, length: 3))
         #expect(engine.markupLineStart(ifCaretAtHome: 7) == 5)
         #expect(engine.markupLineStart(ifCaretAtHome: 8) == nil)
+        #expect(engine.markupDeletion(for: NSRange(location: 7, length: 0))?.applied(to: "text\n- item") == "text\nitem")
     }
 
-    @Test func markupShowsWhenItsSyntaxIsShownOrInsideCode() {
+    /// Markup is ordinary text in the source view and inside code blocks.
+    @Test func sourceViewAndCodeKeepMarkupOrdinary() {
         let (source, _) = engine("- item", showsSyntax: true)
         #expect(source.adjustedSelection(NSRange(location: 0, length: 0), previous: nil) == NSRange(location: 0, length: 0))
         let (code, _) = engine("```\n- item\n```")
         #expect(code.adjustedSelection(NSRange(location: 4, length: 0), previous: nil) == NSRange(location: 4, length: 0))
         #expect(code.markupDeletion(for: NSRange(location: 6, length: 0)) == nil)
-    }
-
-    @Test func returnAndTabInsideCodeAreOrdinary() {
-        let (code, _) = engine("```\n- item\n```")
         #expect(code.newlineEdit(for: NSRange(location: 10, length: 0)) == nil)
         #expect(code.listShiftEdit(for: NSRange(location: 10, length: 0), outdent: false) == nil)
         let (list, _) = engine("- item")
@@ -55,13 +53,6 @@ struct EditorTextEngineTests {
         let font = storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
         #expect((font?.pointSize ?? 18) < 1)              // ** stays hidden under the caret
         #expect(engine.markupDeletion(for: NSRange(location: 2, length: 0)) == nil)
-    }
-
-    @Test func backspaceRemovesHiddenMarkup() {
-        let (engine, _) = engine("## Heading")
-        let edit = engine.markupDeletion(for: NSRange(location: 3, length: 0))
-        #expect(edit?.applied(to: "## Heading") == "Heading")
-        #expect(edit?.selection == NSRange(location: 0, length: 0))
     }
 
     @Test func linksResolveThroughTheNote() {
@@ -97,6 +88,26 @@ struct EditorTextEngineTests {
         // Moving to another line still restyles the one it left.
         engine.selectionDidChange(NSRange(location: 21, length: 0))
         #expect(markupSize() < 1)
+    }
+
+    /// A table header's look depends on the row below it: only a table row
+    /// above an edited line is restyled with it.
+    @Test func onlyATableRowAboveTheEditIsRestyled() {
+        func isBold(_ storage: NSTextStorage, at index: Int) -> Bool {
+            (storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) == true
+        }
+        let (table, storage) = engine("| a |\n| b |")
+        #expect(!isBold(storage, at: 2))
+        storage.replaceCharacters(in: NSRange(location: 8, length: 1), with: "-")   // "| - |": now a delimiter row
+        #expect(isBold(storage, at: 2))
+        _ = table
+
+        let (prose, text) = engine("above\nline")
+        let probe = NSAttributedString.Key("Probe")
+        text.addAttribute(probe, value: true, range: NSRange(location: 0, length: 5))
+        text.replaceCharacters(in: NSRange(location: 6, length: 0), with: "x")      // typed at the start of the line below
+        #expect(text.attribute(probe, at: 0, effectiveRange: nil) != nil)
+        _ = prose
     }
 
     @Test func printingTurnsDrawingsIntoCharacters() {

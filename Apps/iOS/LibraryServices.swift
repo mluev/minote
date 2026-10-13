@@ -23,39 +23,3 @@ enum MobileTrash {
         }
     }
 }
-
-/// Watches the Documents folder for notes added, removed or replaced from the
-/// Files app. (Edits by other apps arrive as replacements; the library also
-/// rescans whenever the app becomes active.)
-final class DirectoryWatcher: LibraryWatching, @unchecked Sendable {
-    private let directory: URL
-    private var source: DispatchSourceFileSystemObject?
-    private var onChange: (@MainActor () -> Void)?
-
-    init(directory: URL) {
-        self.directory = directory
-    }
-
-    func start(onChange: @escaping @MainActor () -> Void) {
-        stop()
-        self.onChange = onChange
-        let descriptor = open(directory.path, O_EVTONLY)
-        guard descriptor >= 0 else { return }
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor,
-            eventMask: [.write, .rename, .delete, .extend, .link],
-            queue: .main
-        )
-        source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.onChange?() }
-        }
-        source.setCancelHandler { close(descriptor) }
-        source.resume()
-        self.source = source
-    }
-
-    func stop() {
-        source?.cancel()
-        source = nil
-    }
-}

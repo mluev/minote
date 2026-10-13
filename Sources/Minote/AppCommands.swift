@@ -1,7 +1,7 @@
 import AppKit
+import MinoteEditor
 import MinoteKit
 import SwiftUI
-import MinoteEditor
 
 /// Every action lives in the system menus; the window stays a blank page.
 struct AppCommands: Commands {
@@ -11,15 +11,14 @@ struct AppCommands: Commands {
     private var library: Library { libraryWindow.library }
     private var windowState: WindowState { libraryWindow.windowState }
     private var storage: LibraryStorageSwitcher { libraryWindow.storage }
-    @AppStorage(PreferenceKey.fontFamily) private var fontFamily = EditorFontFamily.plexMono
-    @AppStorage(PreferenceKey.fontSize) private var fontSize = EditorTheme.defaultFontSize
+    private var preferences = EditorPreferences()
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
-    @AppStorage(PreferenceKey.focusEnabled) private var focusEnabled = false
-    @AppStorage(PreferenceKey.focusUnit) private var focusUnit = FocusMode.sentence
-    @AppStorage(PreferenceKey.typewriter) private var typewriter = false
-    @AppStorage(PreferenceKey.syntaxHighlight) private var syntaxHighlight = false
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
-    @AppStorage(PreferenceKey.showsSyntax) private var showsSyntax = false
+
+    init(libraryWindow: LibraryWindow, openedFiles: OpenedFiles) {
+        self.libraryWindow = libraryWindow
+        self.openedFiles = openedFiles
+    }
 
     var body: some Commands {
         // No Settings window: every preference lives in the menus.
@@ -28,7 +27,9 @@ struct AppCommands: Commands {
         TextEditingCommands()
         fileCommands
         editCommands
-        formatMenu
+        CommandMenu("Format") {
+            FormatMenuItems(isEnabled: front.windowState.isEditorFocused) { front.windowState.editor?.perform($0) }
+        }
         viewCommands
         CommandGroup(replacing: .help) {}
     }
@@ -48,7 +49,7 @@ struct AppCommands: Commands {
     @CommandsBuilder private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Note") { libraryWindow.newNote() }
-            .keyboardShortcut("n")
+                .keyboardShortcut("n")
             Button("Open…") { openedFiles.showOpenPanel() }
                 .keyboardShortcut("o")
             Menu("Open Recent") {
@@ -70,10 +71,12 @@ struct AppCommands: Commands {
             Button("Rename…") { windowState.renaming = library.selectedNote }
                 .disabled(isFileInFront || library.selectedNote?.isBlankDraft ?? true)
             Divider()
-            Button("Show in Finder") { NoteActions.revealInFinder(front.library.selectedNote) }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(front.library.selectedNote?.fileURL == nil)
-            Button("Show Library in Finder") { NoteActions.openLibraryFolder(library) }
+            Button("Show in Finder") {
+                if let url = front.library.selectedNote?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(front.library.selectedNote?.fileURL == nil)
+            Button("Show Library in Finder") { NSWorkspace.shared.open(library.directory) }
             Toggle(storage.isICloudAvailable ? "Keep Notes in iCloud Drive" : "Keep Notes in iCloud Drive (iCloud Unavailable)", isOn: Binding(
                 get: { storage.storage == .iCloud },
                 set: { keep in Task { await storage.move(to: keep ? .iCloud : .local) } }
@@ -83,7 +86,7 @@ struct AppCommands: Commands {
             // ⌘⌫ only while the list has focus; in the editor it deletes to the start of the line.
             Button("Move to Trash") {
                 guard let id = library.selectedID else { return }
-                NoteActions.moveToTrash(id, in: library, undoManager: NSApp.keyWindow?.undoManager)
+                library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
             }
             .keyboardShortcut(.delete, modifiers: .command)
             .disabled(isFileInFront || !windowState.isSidebarFocused || library.selectedNote == nil)
@@ -91,7 +94,7 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
                 let front = self.front
-                let title = front.library.selectedNote?.title ?? "Note"
+                let title = front.library.selectedNote?.title ?? ""
                 front.windowState.editor?.printNote(title: title.isEmpty ? "Note" : title)
             }
             .keyboardShortcut("p")
@@ -112,49 +115,6 @@ struct AppCommands: Commands {
         }
     }
 
-    // MARK: Format
-
-    private var formatMenu: some Commands {
-        CommandMenu("Format") {
-            format("Bold", .bold, "b")
-            format("Italic", .italic, "i")
-            format("Strikethrough", .strikethrough, "x", [.command, .shift])
-            format("Code", .inlineCode, "c", [.command, .option])
-            format("Link", .link, "k")
-            Divider()
-            Menu("Heading") {
-                ForEach(1...6, id: \.self) { level in
-                    format("Heading \(level)", .heading(level), KeyEquivalent(Character("\(level)")))
-                }
-                Divider()
-                format("Body Text", .heading(0))
-            }
-            Divider()
-            format("Bulleted List", .bulletedList, "l")
-            format("Numbered List", .numberedList, "l", [.command, .option])
-            format("Task List", .taskList, "l", [.command, .shift])
-            format("Mark Task as Done", .toggleTaskDone, .return)
-            Divider()
-            format("Quote", .blockquote, "'")
-            format("Code Block", .codeBlock, "b", [.command, .option])
-            format("Horizontal Rule", .horizontalRule)
-            Divider()
-            format("Shift Right", .shiftRight, "]")
-            format("Shift Left", .shiftLeft, "[")
-        }
-    }
-
-    @ViewBuilder
-    private func format(_ title: String, _ action: FormatAction, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
-        let button = Button(title) { front.windowState.editor?.perform(action) }
-            .disabled(!front.windowState.isEditorFocused)
-        if let key {
-            button.keyboardShortcut(key, modifiers: modifiers)
-        } else {
-            button
-        }
-    }
-
     // MARK: View
 
     @CommandsBuilder private var viewCommands: some Commands {
@@ -164,34 +124,34 @@ struct AppCommands: Commands {
                 .keyboardShortcut("r")
                 .disabled(front.library.selectedNote == nil)
             Divider()
-            Toggle("Focus Mode", isOn: $focusEnabled)
+            Toggle("Focus Mode", isOn: preferences.$focusEnabled)
                 .keyboardShortcut("d")
-            Picker("Focus On", selection: $focusUnit) {
+            Picker("Focus On", selection: preferences.$focusUnit) {
                 Text("Sentence").tag(FocusMode.sentence)
                 Text("Paragraph").tag(FocusMode.paragraph)
             }
-            Toggle("Typewriter Mode", isOn: $typewriter)
+            Toggle("Typewriter Mode", isOn: preferences.$typewriter)
                 .keyboardShortcut("t")
-            Toggle("Syntax Highlight", isOn: $syntaxHighlight)
+            Toggle("Syntax Highlight", isOn: preferences.$syntaxHighlight)
                 .keyboardShortcut("h", modifiers: [.command, .shift])
             Toggle("Word Count", isOn: $showCounter)
-            Toggle("Show Markdown Syntax", isOn: $showsSyntax)
+            Toggle("Show Markdown Syntax", isOn: preferences.$showsSyntax)
                 .keyboardShortcut("m", modifiers: [.command, .shift])
             Divider()
-            Picker("Font", selection: $fontFamily) {
+            Picker("Font", selection: preferences.$fontFamily) {
                 ForEach(EditorFontFamily.allCases) { family in
                     Text(family.displayName).tag(family)
                 }
             }
-            Button("Bigger") { fontSize = min(fontSize + 1, EditorTheme.fontSizeRange.upperBound) }
+            Button("Bigger") { preferences.fontSize = min(preferences.fontSize + 1, EditorTheme.fontSizeRange.upperBound) }
                 .keyboardShortcut("+")
-                .disabled(fontSize >= EditorTheme.fontSizeRange.upperBound)
-            Button("Smaller") { fontSize = max(fontSize - 1, EditorTheme.fontSizeRange.lowerBound) }
+                .disabled(preferences.fontSize >= EditorTheme.fontSizeRange.upperBound)
+            Button("Smaller") { preferences.fontSize = max(preferences.fontSize - 1, EditorTheme.fontSizeRange.lowerBound) }
                 .keyboardShortcut("-")
-                .disabled(fontSize <= EditorTheme.fontSizeRange.lowerBound)
-            Button("Actual Size") { fontSize = EditorTheme.defaultFontSize }
+                .disabled(preferences.fontSize <= EditorTheme.fontSizeRange.lowerBound)
+            Button("Actual Size") { preferences.fontSize = EditorTheme.defaultFontSize }
                 .keyboardShortcut("0")
-                .disabled(fontSize == EditorTheme.defaultFontSize)
+                .disabled(preferences.fontSize == EditorTheme.defaultFontSize)
             Divider()
             Picker("Appearance", selection: Binding(get: { theme }, set: PageTheme.select)) {
                 ForEach(PageTheme.allCases) { theme in

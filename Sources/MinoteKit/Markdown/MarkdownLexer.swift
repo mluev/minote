@@ -123,6 +123,12 @@ public enum MarkdownLexer {
         let isBare = rest.allSatisfy { $0 == .space || $0 == .tab }
         return (char, length, isBare)
     }
+
+    /// `| --- | :-: |`: the row under a table's header.
+    public static func isTableDelimiterRow(_ chars: some Collection<UInt16>) -> Bool {
+        chars.contains(.pipe) && chars.contains(.hyphen)
+            && chars.allSatisfy { $0 == .pipe || $0 == .hyphen || $0 == .colon || $0 == .space || $0 == .tab }
+    }
 }
 
 // MARK: - Line lexer
@@ -232,45 +238,29 @@ private struct LineLexer {
         spans.append(MarkdownSpan(start..<markerEnd, .syntax))
 
         // A list inside the quote: "> - item" hangs after the bullet.
-        if let marker = listMarker(at: i) {
-            spans.append(MarkdownSpan(i..<marker.end, .syntax))
-            parseInline(marker.end..<count)
-            return MarkdownLine(kind: .blockquote, contentStart: marker.end, spans: spans,
-                                list: marker.info(indentColumns: 0), quoteDepth: depth, links: links)
+        if case let (list, end)? = listMarker(at: i, indentColumns: 0) {
+            spans.append(MarkdownSpan(i..<end, .syntax))
+            parseInline(end..<count)
+            return MarkdownLine(kind: .blockquote, contentStart: end, spans: spans, list: list, quoteDepth: depth, links: links)
         }
         parseInline(i..<count)
         return MarkdownLine(kind: .blockquote, contentStart: markerEnd, spans: spans, quoteDepth: depth, links: links)
     }
 
     private mutating func listItem(at start: Int) -> MarkdownLine? {
-        guard let marker = listMarker(at: start) else { return nil }
-        spans.append(MarkdownSpan(start..<marker.end, .syntax))
-        let info = marker.info(indentColumns: indentColumns(upTo: start))
-        if let done = marker.task, done {
-            parseInline(marker.end..<count)
-            spans.append(MarkdownSpan(marker.end..<count, .strikethrough))
-            return MarkdownLine(kind: .taskItem(done: true), contentStart: marker.end, spans: spans, list: info, links: links)
+        guard case let (list, end)? = listMarker(at: start, indentColumns: indentColumns(upTo: start)) else { return nil }
+        spans.append(MarkdownSpan(start..<end, .syntax))
+        parseInline(end..<count)
+        guard list.taskBox != nil else {
+            return MarkdownLine(kind: .listItem(ordered: list.ordered), contentStart: end, spans: spans, list: list, links: links)
         }
-        parseInline(marker.end..<count)
-        let kind: MarkdownLineKind = marker.task != nil ? .taskItem(done: false) : .listItem(ordered: marker.ordered)
-        return MarkdownLine(kind: kind, contentStart: marker.end, spans: spans, list: info, links: links)
-    }
-
-    private struct ListMarkerScan {
-        var markerRange: Range<Int>
-        var end: Int
-        var ordered: Bool
-        var task: Bool?
-        var box: Range<Int>?
-
-        func info(indentColumns: Int) -> MarkdownListMarker {
-            MarkdownListMarker(marker: markerRange, ordered: ordered, taskBox: box, isDone: task == true, indentColumns: indentColumns)
-        }
+        if list.isDone { spans.append(MarkdownSpan(end..<count, .strikethrough)) }
+        return MarkdownLine(kind: .taskItem(done: list.isDone), contentStart: end, spans: spans, list: list, links: links)
     }
 
     /// `-`, `*`, `+` or `1.` / `1)` followed by a space (or the end of the
-    /// line), with an optional `[ ]` / `[x]` task box.
-    private func listMarker(at start: Int) -> ListMarkerScan? {
+    /// line), with an optional `[ ]` / `[x]` task box. `end` is where the text starts.
+    private func listMarker(at start: Int, indentColumns: Int) -> (list: MarkdownListMarker, end: Int)? {
         guard start < count else { return nil }
         var i = start
         let ordered: Bool
@@ -284,25 +274,19 @@ private struct LineLexer {
             ordered = true
         }
         guard i == count || chars[i] == .space || chars[i] == .tab else { return nil }
-        let markerRange = start..<i
+        var list = MarkdownListMarker(marker: start..<i, ordered: ordered, taskBox: nil, isDone: false, indentColumns: indentColumns)
         i = leadingWhitespaceEnd(from: i)
 
-        var task: Bool?
-        var box: Range<Int>?
         if i + 3 <= count, chars[i] == .openBracket, chars[i + 2] == .closeBracket,
            i + 3 == count || chars[i + 3] == .space || chars[i + 3] == .tab {
             let mark = chars[i + 1]
-            if mark == .space {
-                task = false
-            } else if mark == .lowercaseX || mark == .uppercaseX {
-                task = true
-            }
-            if task != nil {
-                box = i..<i + 3
+            if mark == .space || mark == .lowercaseX || mark == .uppercaseX {
+                list.taskBox = i..<i + 3
+                list.isDone = mark != .space
                 i = leadingWhitespaceEnd(from: i + 3)
             }
         }
-        return ListMarkerScan(markerRange: markerRange, end: i, ordered: ordered, task: task, box: box)
+        return (list, i)
     }
 
     private mutating func linkDefinition(at start: Int) -> MarkdownLine? {
@@ -325,10 +309,7 @@ private struct LineLexer {
     }
 
     private mutating func tableRow(at start: Int) -> MarkdownLine {
-        let isDelimiterRow = chars[start...].allSatisfy {
-            $0 == .pipe || $0 == .hyphen || $0 == .colon || $0.isWhitespace
-        }
-        if isDelimiterRow {
+        if MarkdownLexer.isTableDelimiterRow(chars[start...]) {
             return line(.table, contentStart: start, syntax: start..<count)
         }
         parseInline(start..<count)

@@ -1,3 +1,4 @@
+import AppKit
 import MinoteEditor
 import MinoteKit
 import SwiftUI
@@ -65,9 +66,7 @@ struct SidebarView: View {
             return .handled
         }
         .onDeleteCommand {
-            if let id = library.selectedID {
-                NoteActions.moveToTrash(id, in: library, undoManager: undoManager)
-            }
+            if let id = library.selectedID { trash(id) }
         }
         .searchable(text: $library.searchText, placement: .sidebar, prompt: "Search")
         .searchFocused($isSearchFocused)
@@ -99,10 +98,14 @@ struct SidebarView: View {
         library.selectedID = notes[index].id
     }
 
+    private func trash(_ id: Note.ID) {
+        library.moveToTrash(id, undoManager: undoManager, actionName: "Move to Trash")
+    }
+
     @ViewBuilder
     private func contextMenu(for note: Note) -> some View {
         Button("Show in Finder") {
-            NoteActions.revealInFinder(note)
+            if let url = note.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         .disabled(note.isDraft)
         Button("Rename…") {
@@ -114,9 +117,7 @@ struct SidebarView: View {
         }
         .disabled(note.isDraft)
         Divider()
-        Button("Move to Trash") {
-            NoteActions.moveToTrash(note.id, in: library, undoManager: undoManager)
-        }
+        Button("Move to Trash") { trash(note.id) }
     }
 }
 
@@ -130,7 +131,7 @@ struct NoteRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(note.title.isEmpty ? "New Note" : note.title)
+            Text(note.displayTitle)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(nsColor: note.title.isEmpty ? palette.syntax : palette.text))
                 .lineLimit(1)

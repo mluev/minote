@@ -10,7 +10,6 @@ public enum LibraryStorage: String, Sendable {
 
 /// What a move between library folders left behind.
 public struct NoteMoveReport: Sendable {
-    public var moved = 0
     /// Files that couldn't be moved (or, from iCloud, weren't downloaded in
     /// time). They stay in the old folder, untouched.
     public var leftBehind: [String] = []
@@ -99,7 +98,6 @@ public enum LibraryLocation {
                 } else {
                     try manager.moveItem(at: file, to: target)
                 }
-                report.moved += 1
             } catch {
                 report.leftBehind.append(file.lastPathComponent)
                 report.firstError = report.firstError ?? error.localizedDescription
@@ -113,21 +111,14 @@ public enum LibraryLocation {
     static func noteFiles(in directory: URL) -> [URL] {
         let manager = FileManager.default
         guard let entries = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
-        var files: [URL] = []
-        for entry in entries {
-            var name = entry.lastPathComponent
-            if name.hasPrefix(".") {
-                guard name.hasSuffix(".icloud") else { continue }
-                name = String(name.dropFirst().dropLast(".icloud".count))
-                let file = directory.appendingPathComponent(name, isDirectory: false)
-                if NoteNaming.isNoteFile(file) { files.append(file) }
-                continue
+        return entries.compactMap { entry -> URL? in
+            if let real = NoteNaming.placeholderTarget(entry.lastPathComponent) {
+                return directory.appendingPathComponent(real, isDirectory: false)
             }
-            guard NoteNaming.isNoteFile(entry),
-                  (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-            files.append(entry)
+            guard !entry.lastPathComponent.hasPrefix("."), NoteNaming.isNoteFile(entry),
+                  (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+            return entry
         }
-        return files
     }
 
     /// False only for an iCloud file whose contents aren't on this device.

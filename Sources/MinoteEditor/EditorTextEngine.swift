@@ -144,21 +144,21 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             guard let raw = value as? String, case .code? = MarkdownBlock(rawValue: raw) else { return }
             copy.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: run)
         }
+        let visible: [NSAttributedString.Key: Any] = [.font: styleSheet.fonts.regular, .foregroundColor: styleSheet.palette.listMarker]
         copy.enumerateAttribute(.minoteMark, in: all, options: .reverse) { value, run, _ in
             guard let raw = value as? String, let mark = MarkdownMark(rawValue: raw) else { return }
-            let visible: [NSAttributedString.Key: Any] = [.font: styleSheet.fonts.regular, .foregroundColor: styleSheet.palette.listMarker]
+            let replacement: String
             switch mark {
-            case .bullet(let level):
-                copy.replaceCharacters(in: run, with: NSAttributedString(string: ["•", "◦", "▪"][level % 3], attributes: copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }))
-            case .checkbox(let done):
-                copy.replaceCharacters(in: run, with: NSAttributedString(string: done ? "☑" : "☐", attributes: copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }))
-            case .rule:
-                copy.replaceCharacters(in: run, with: NSAttributedString(string: String(repeating: "─", count: 24), attributes: copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }))
+            case .bullet(let level): replacement = ["•", "◦", "▪"][level % 3]
+            case .checkbox(let done): replacement = done ? "☑" : "☐"
+            case .rule: replacement = String(repeating: "─", count: 24)
+            case .tableRule: replacement = String(repeating: "─", count: run.length)
             case .tablePipe:
                 copy.addAttributes(visible, range: run)
-            case .tableRule:
-                copy.replaceCharacters(in: run, with: NSAttributedString(string: String(repeating: "─", count: run.length), attributes: copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }))
+                return
             }
+            let attributes = copy.attributes(at: run.location, effectiveRange: nil).merging(visible) { $1 }
+            copy.replaceCharacters(in: run, with: NSAttributedString(string: replacement, attributes: attributes))
         }
         copy.endEditing()
     }
@@ -179,36 +179,31 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             range = NSUnionRange(range, invalidated)
         }
         // A table header's look depends on the row below it.
-        if range.location > 0 {
-            range = NSUnionRange(range, text.lineRange(for: NSRange(location: range.location - 1, length: 0)))
+        let lineStart = text.lineRange(for: NSRange(location: range.location, length: 0)).location
+        if lineStart > 0 {
+            let above = text.lineRange(for: NSRange(location: lineStart - 1, length: 0))
+            if Self.isTableRow(above, in: text) { range = NSUnionRange(range, above) }
         }
-        if var focus = focusedRange {
-            // Keep the focus range aligned with the text while it's edited.
+        // The focus range and the revealed lines move, grow and shrink with
+        // the typing, so the selection change that follows doesn't restyle
+        // what was just styled.
+        func shift(_ range: NSRange) -> NSRange {
+            var range = range
             let oldEnd = editedRange.location + editedRange.length - delta
-            if editedRange.location <= focus.location, oldEnd <= focus.location {
-                focus.location += delta
-            } else if editedRange.location <= NSMaxRange(focus) {
-                focus.length = max(0, focus.length + delta)
+            if oldEnd <= range.location, editedRange.location < range.location {
+                range.location = max(0, range.location + delta)
+            } else if editedRange.location <= NSMaxRange(range) {
+                range.length = max(0, range.length + delta)
             }
-            focusedRange = clamp(focus, to: text.length)
-            styler.focusRange = focusedRange
+            return range.clamped(to: text.length)
         }
-        if let reveal = styler.revealRange {
+        focusedRange = focusedRange.map(shift)
+        styler.focusRange = focusedRange
+        revealedLines = revealedLines.map(shift)
+        if var reveal = styler.revealRange {
             // The caret moves with the typing; keep its line revealed.
-            var shifted = reveal
-            if editedRange.location <= reveal.location { shifted.location = max(0, reveal.location + delta) }
-            styler.revealRange = clamp(shifted, to: text.length)
-        }
-        if var lines = revealedLines {
-            // The revealed lines grow and shrink with the typing too, so the
-            // selection change that follows doesn't restyle what was just styled.
-            let oldEnd = editedRange.location + editedRange.length - delta
-            if oldEnd <= lines.location, editedRange.location < lines.location {
-                lines.location = max(0, lines.location + delta)
-            } else if editedRange.location <= NSMaxRange(lines) {
-                lines.length = max(0, lines.length + delta)
-            }
-            revealedLines = clamp(lines, to: text.length)
+            if editedRange.location <= reveal.location { reveal.location = max(0, reveal.location + delta) }
+            styler.revealRange = reveal.clamped(to: text.length)
         }
         guard !isComposing() else { return }
         styler.style(textStorage, range: range, fences: fences)
@@ -223,7 +218,7 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         guard let storage else { return }
         let text = storage.mutableString
         let length = text.length
-        let newFocus: NSRange? = configuration.focus == .off || length == 0 ? nil : focusTarget(selection: selection, in: text)
+        let newFocus = configuration.focus == .off || length == 0 ? nil : focusTarget(selection: selection, in: text)
         let newReveal = revealTarget(selection: selection, in: text)
         let focusChanged = force || newFocus != focusedRange
         // What shows depends on where the caret is within its line, so any
@@ -241,7 +236,7 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         if focusChanged {
             switch (focusedRange, newFocus) {
             case let (old?, new?) where !force:
-                add(text.paragraphRange(for: clamp(old, to: length)))
+                add(text.paragraphRange(for: old.clamped(to: length)))
                 add(text.paragraphRange(for: new))
             case (nil, nil):
                 break
@@ -250,7 +245,7 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             }
         }
         if revealChanged {
-            add(revealedLines.map { text.lineRange(for: clamp($0, to: length)) })
+            add(revealedLines.map { text.lineRange(for: $0.clamped(to: length)) })
             add(newReveal)
         }
 
@@ -269,7 +264,7 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
     /// markup shows everywhere anyway, or nowhere (Preview).
     private func revealTarget(selection: NSRange, in text: NSMutableString) -> NSRange? {
         guard !configuration.showsSyntax, !configuration.preview, text.length > 0 else { return nil }
-        return text.lineRange(for: clamp(selection, to: text.length))
+        return text.lineRange(for: selection.clamped(to: text.length))
     }
 
     // MARK: Rendered markup: caret, backspace, links, task boxes
@@ -321,6 +316,13 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         guard configuration.rendersMarkdown, !configuration.preview, let storage, storage.length > 0 else { return nil }
         let text = storage.mutableString
         return MarkdownEditing.deleteMarkup(in: text, selection: selection, insideFence: isInsideFence(selection.location, in: text))
+    }
+
+    /// Whether a line starts with a table's `|`.
+    private static func isTableRow(_ line: NSRange, in text: NSString) -> Bool {
+        var i = line.location
+        while i < NSMaxRange(line), text.character(at: i) == 0x20 || text.character(at: i) == 0x09 { i += 1 }
+        return i < NSMaxRange(line) && text.character(at: i) == 0x7C
     }
 
     /// Whether the line at `location` is inside a fenced code block (fence lines included).
@@ -409,10 +411,30 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         return nil
     }
 
-    /// Ticks or unticks the task on the line at `location`.
-    public func toggleTaskEdit(at location: Int) -> TextEdit? {
-        guard let storage else { return nil }
-        return MarkdownEditing.toggleTaskDone(in: storage.mutableString, selection: NSRange(location: location, length: 0))
+    /// Ticks or unticks the task on the line at `location`, leaving the selection where it is.
+    public func toggleTaskEdit(at location: Int, keeping selection: NSRange) -> TextEdit? {
+        guard let storage, let edit = MarkdownEditing.toggleTaskDone(in: storage.mutableString, selection: NSRange(location: location, length: 0)) else { return nil }
+        return TextEdit(edit.replacements, selection: selection)
+    }
+
+    // MARK: The library's view of the text
+
+    /// Whether the caret is on (or before) the first non-blank line, which names the note.
+    public func isCaretInTitleLine(_ selection: NSRange) -> Bool {
+        guard let text = storage?.mutableString else { return true }
+        let first = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
+        guard first.location != NSNotFound else { return true }
+        var contentsEnd = 0
+        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: first.location, length: 0))
+        return selection.location <= contentsEnd
+    }
+
+    /// The beginning of the text, enough for the note's title and excerpt,
+    /// cut on a character boundary.
+    public func titlePrefix() -> String {
+        guard let text = storage?.mutableString, text.length > 0 else { return "" }
+        let length = min(text.length, NoteNaming.prefixLength)
+        return text.substring(with: text.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: length)))
     }
 
     private func focusTarget(selection: NSRange, in text: NSMutableString) -> NSRange {
@@ -427,10 +449,5 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             }
         }
         return sentence
-    }
-
-    private func clamp(_ range: NSRange, to length: Int) -> NSRange {
-        let location = min(range.location, length)
-        return NSRange(location: location, length: min(range.length, length - location))
     }
 }

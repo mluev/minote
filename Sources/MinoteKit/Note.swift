@@ -28,6 +28,8 @@ public final class Note: Identifiable {
     @ObservationIgnored var revision = 0
     @ObservationIgnored var savedRevision = 0
 
+    /// The title, or "New Note" while there's none.
+    public var displayTitle: String { title.isEmpty ? "New Note" : title }
     public var isDraft: Bool { fileURL == nil }
     /// A draft without a word yet: nothing to rename, duplicate or reveal.
     public var isBlankDraft: Bool { isDraft && title.isEmpty }

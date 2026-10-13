@@ -1,27 +1,27 @@
 import Foundation
-import MinoteKit
 
-/// Watches one opened file, so edits other apps make to it show up live.
-/// Editors that save by replacing the file leave the watched one deleted or
+/// Watches one file or folder, so changes other apps make there show up live.
+/// Editors that save by replacing a file leave the watched one deleted or
 /// renamed: the watcher then picks up whatever is at the path now, and keeps
 /// looking while nothing is there.
-final class FileWatcher: LibraryWatching {
+@MainActor
+public final class PathWatcher: LibraryWatching {
     private let url: URL
     private var source: DispatchSourceFileSystemObject?
     private var retry: Task<Void, Never>?
     private var onChange: (@MainActor () -> Void)?
 
-    init(url: URL) {
+    public init(url: URL) {
         self.url = url
     }
 
-    func start(onChange: @escaping @MainActor () -> Void) {
+    public func start(onChange: @escaping @MainActor () -> Void) {
         stop()
         self.onChange = onChange
         watch()
     }
 
-    func stop() {
+    public func stop() {
         retry?.cancel()
         retry = nil
         source?.cancel()
@@ -38,7 +38,7 @@ final class FileWatcher: LibraryWatching {
         }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
-            eventMask: [.write, .extend, .attrib, .delete, .rename, .revoke],
+            eventMask: [.write, .extend, .attrib, .link, .delete, .rename, .revoke],
             queue: .main
         )
         source.setEventHandler { [weak self] in
@@ -55,7 +55,7 @@ final class FileWatcher: LibraryWatching {
         self.source = source
     }
 
-    /// The file went away (or is being replaced): watch the path again soon.
+    /// The item went away (or is being replaced): watch the path again soon.
     private func watchAgain(after delay: Duration) {
         source?.cancel()
         source = nil

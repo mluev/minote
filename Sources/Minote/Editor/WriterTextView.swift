@@ -134,30 +134,29 @@ final class WriterTextView: NSTextView {
 
     /// Return continues lists and quotes; Return on an empty item ends them.
     override func insertNewline(_ sender: Any?) {
-        guard !hasMarkedText(), let edit = interaction?.newlineEdit(for: selectedRange()) else {
-            super.insertNewline(sender)
-            return
-        }
-        apply(edit, actionName: nil)
+        if !applied(hasMarkedText() ? nil : interaction?.newlineEdit(for: selectedRange())) { super.insertNewline(sender) }
     }
 
     /// Tab and Shift-Tab indent and outdent list items.
     override func insertTab(_ sender: Any?) {
-        guard let edit = interaction?.listShiftEdit(for: selectedRange(), outdent: false) else {
-            super.insertTab(sender)
-            return
-        }
-        apply(edit, actionName: nil)
+        if !applied(interaction?.listShiftEdit(for: selectedRange(), outdent: false)) { super.insertTab(sender) }
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        if !applied(interaction?.listShiftEdit(for: selectedRange(), outdent: true)) { super.insertBacktab(sender) }
     }
 
     /// Backspace right after a bullet, task box, heading or quote marker
     /// removes that markup, which the rendered view doesn't show as text.
     override func deleteBackward(_ sender: Any?) {
-        if !hasMarkedText(), let edit = interaction?.markupDeletion(for: selectedRange()) {
-            apply(edit, actionName: nil)
-            return
-        }
-        super.deleteBackward(sender)
+        if !applied(hasMarkedText() ? nil : interaction?.markupDeletion(for: selectedRange())) { super.deleteBackward(sender) }
+    }
+
+    /// Applies a smart-typing edit, if there is one.
+    private func applied(_ edit: TextEdit?) -> Bool {
+        guard let edit else { return false }
+        apply(edit, actionName: nil)
+        return true
     }
 
     // The Left arrow at the start of a bullet's (heading's, quote's) text goes
@@ -188,14 +187,6 @@ final class WriterTextView: NSTextView {
         return true
     }
 
-    override func insertBacktab(_ sender: Any?) {
-        guard let edit = interaction?.listShiftEdit(for: selectedRange(), outdent: true) else {
-            super.insertBacktab(sender)
-            return
-        }
-        apply(edit, actionName: nil)
-    }
-
     /// Runs a Format menu action on the selection.
     func perform(_ action: FormatAction) {
         guard isEditable, let text = textStorage?.mutableString else { return }
@@ -224,9 +215,7 @@ final class WriterTextView: NSTextView {
         storage.endEditing()
         didChangeText()
         if let actionName { undoManager?.setActionName(actionName) }
-        let length = storage.length
-        let location = min(edit.selection.location, length)
-        setSelectedRange(NSRange(location: location, length: min(edit.selection.length, length - location)))
+        setSelectedRange(edit.selection.clamped(to: storage.length))
         scrollRangeToVisible(selectedRange())
     }
 
@@ -545,7 +534,7 @@ final class WriterTextView: NSTextView {
         return last == 0x0A || last == 0x0D || last == 0x2028 || last == 0x2029
     }
 
-    // MARK: Focus and text queries
+    // MARK: Focus
 
     func focus() {
         if let window {
@@ -553,26 +542,5 @@ final class WriterTextView: NSTextView {
         } else {
             focusWhenInWindow = true
         }
-    }
-
-    /// The first characters of the text, cut on a character boundary.
-    func textPrefix() -> String {
-        guard let storage = textStorage else { return "" }
-        let string = storage.mutableString
-        let length = min(string.length, NoteNaming.prefixLength)
-        guard length > 0 else { return "" }
-        let range = string.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: length))
-        return string.substring(with: range)
-    }
-
-    /// Whether the caret is on (or before) the first non-blank line.
-    var isCaretInTitleLine: Bool {
-        guard let storage = textStorage else { return true }
-        let string = storage.mutableString
-        let first = string.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
-        guard first.location != NSNotFound else { return true }
-        var contentsEnd = 0
-        string.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: first.location, length: 0))
-        return selectedRange().location <= contentsEnd
     }
 }

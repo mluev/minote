@@ -2,12 +2,22 @@ import Foundation
 import Testing
 @testable import MinoteKit
 
+/// Where the notes under test live: the library folder, or one file of it
+/// opened from elsewhere (Finder, File ▸ Open…) in its own window.
+enum Place: CaseIterable, Sendable {
+    case library, openedFile
+}
+
 @MainActor
 @Suite("Library")
 struct LibraryTests {
-    /// A loaded library over a temporary folder with a fake editor attached.
-    private func makeLibrary(_ folder: TemporaryLibrary, timing: LibraryTiming = .fast, defaults: UserDefaults = freshDefaults()) async -> (Library, FakeEditor) {
-        let library = Library(store: folder.makeStore(), timing: timing, defaults: defaults)
+    /// A loaded library over a temporary folder, or over just its file `name`,
+    /// with a fake editor attached.
+    private func makeLibrary(_ folder: TemporaryLibrary, _ place: Place = .library, file name: String = "",
+                             timing: LibraryTiming = .fast, defaults: UserDefaults = freshDefaults()) async -> (Library, FakeEditor) {
+        let store = place == .library ? folder.makeStore()
+            : NoteFileStore(file: folder.notes.appendingPathComponent(name), backupDirectory: folder.backups)
+        let library = Library(store: store, timing: timing, defaults: defaults)
         let editor = FakeEditor()
         library.attach(editor)
         await library.load()
@@ -120,11 +130,15 @@ struct LibraryTests {
         #expect(folder.contents(of: "Typing.md") == text)
     }
 
-    @Test func outsideChangesReloadTheOpenNote() async throws {
+    // MARK: Outside changes, in the library and in an opened file
+
+    @Test(arguments: Place.allCases)
+    func outsideChangesReloadTheOpenNote(_ place: Place) async throws {
         let folder = try TemporaryLibrary()
         try folder.write("Shared\nv1", to: "Shared.md")
-        let (library, editor) = await makeLibrary(folder)
+        let (library, editor) = await makeLibrary(folder, place, file: "Shared.md")
         #expect(editor.text == "Shared\nv1")
+        #expect(library.isSingleFile == (place == .openedFile))
 
         try await Task.sleep(for: .milliseconds(20)) // distinct modification date
         try folder.write("Shared\nv2 from vim", to: "Shared.md")
@@ -133,15 +147,15 @@ struct LibraryTests {
 
         #expect(editor.text == "Shared\nv2 from vim")
         #expect(editor.reloadCount == 1)
-        #expect(library.notes.count == 2)
-        #expect(library.notes.contains { $0.title == "New file" })
+        // An opened file's window shows that file alone.
+        #expect(library.notes.map(\.title).sorted() == (place == .library ? ["New file", "Shared"] : ["Shared"]))
     }
 
-    @Test func unsavedEditsWinOverOutsideChanges() async throws {
+    @Test(arguments: Place.allCases)
+    func unsavedEditsWinOverOutsideChanges(_ place: Place) async throws {
         let folder = try TemporaryLibrary()
         try folder.write("Mine\nv1", to: "Mine.md")
-        let slow = LibraryTiming(saveDebounce: .milliseconds(300), maxSaveLatency: .seconds(1), rescanDebounce: .milliseconds(10), retryDelay: .milliseconds(50))
-        let (library, editor) = await makeLibrary(folder, timing: slow)
+        let (library, editor) = await makeLibrary(folder, place, file: "Mine.md", timing: .slow)
 
         editor.type("Mine\nlocal edit", in: library)
         try folder.write("Mine\noutside edit", to: "Mine.md")
@@ -153,11 +167,11 @@ struct LibraryTests {
         #expect(folder.contents(of: "Mine.md") == "Mine\nlocal edit")
     }
 
-    @Test func outsideDeletionWithUnsavedEditsKeepsTheText() async throws {
+    @Test(arguments: Place.allCases)
+    func deletedWhileTypingIsWrittenAgain(_ place: Place) async throws {
         let folder = try TemporaryLibrary()
         try folder.write("Fragile\nv1", to: "Fragile.md")
-        let slow = LibraryTiming(saveDebounce: .milliseconds(300), maxSaveLatency: .seconds(1), rescanDebounce: .milliseconds(10), retryDelay: .milliseconds(50))
-        let (library, editor) = await makeLibrary(folder, timing: slow)
+        let (library, editor) = await makeLibrary(folder, place, file: "Fragile.md", timing: .slow)
 
         editor.type("Fragile\nunsaved words", in: library)
         try FileManager.default.removeItem(at: folder.notes.appendingPathComponent("Fragile.md"))
@@ -166,6 +180,7 @@ struct LibraryTests {
 
         #expect(folder.fileNames == ["Fragile.md"])
         #expect(folder.contents(of: "Fragile.md") == "Fragile\nunsaved words")
+        #expect(library.notes.count == 1)
     }
 
     @Test func outsideDeletionOfACleanNoteRemovesIt() async throws {
@@ -266,8 +281,7 @@ struct LibraryTests {
     @Test func pendingEditsAreWrittenBeforeTrashing() async throws {
         let folder = try TemporaryLibrary()
         try folder.write("Draft\nold", to: "Draft.md")
-        let slow = LibraryTiming(saveDebounce: .seconds(5), maxSaveLatency: .seconds(10), rescanDebounce: .milliseconds(10), retryDelay: .milliseconds(50))
-        let (library, editor) = await makeLibrary(folder, timing: slow)
+        let (library, editor) = await makeLibrary(folder, timing: .manual)
 
         editor.type("Draft\nnewest words", in: library)
         let draft = try #require(library.selectedID)
@@ -277,8 +291,7 @@ struct LibraryTests {
 
     @Test func saveNowFlushesBeforeTheDebounce() async throws {
         let folder = try TemporaryLibrary()
-        let slow = LibraryTiming(saveDebounce: .seconds(5), maxSaveLatency: .seconds(10), rescanDebounce: .milliseconds(10), retryDelay: .milliseconds(50))
-        let (library, editor) = await makeLibrary(folder, timing: slow)
+        let (library, editor) = await makeLibrary(folder, timing: .manual)
 
         editor.type("Quit soon\nlast words", in: library)
         await library.prepareForTermination()
@@ -307,8 +320,7 @@ struct LibraryTests {
         let to = try TemporaryLibrary()
         try from.write("Kept\nbody", to: "Kept.md")
         try to.write("Already there", to: "Kept.md")
-        let slow = LibraryTiming(saveDebounce: .seconds(5), maxSaveLatency: .seconds(10), rescanDebounce: .milliseconds(10), retryDelay: .milliseconds(50))
-        let (library, editor) = await makeLibrary(from, timing: slow)
+        let (library, editor) = await makeLibrary(from, timing: .manual)
 
         editor.type("Kept\nunsaved edit", in: library)
         await library.relocate(to: to.makeStore(), watcher: nil, movingNotes: true)
@@ -332,5 +344,91 @@ struct LibraryTests {
         #expect(library.visibleNotes.map(\.title) == ["Recipes"])
         library.searchText = ""
         #expect(library.visibleNotes.count == 2)
+    }
+
+    // MARK: An opened file
+
+    /// A folder with "Readme.md" and a neighbor; `prepare` runs before the readme is opened alone.
+    private func openReadme(_ text: String, defaults: UserDefaults = freshDefaults(),
+                            prepare: (URL) throws -> Void = { _ in }) async throws -> (TemporaryLibrary, Library, FakeEditor) {
+        let folder = try TemporaryLibrary()
+        try folder.write(text, to: "Readme.md")
+        try folder.write("not mine", to: "Neighbor.md")
+        try prepare(folder.notes.appendingPathComponent("Readme.md"))
+        let (library, editor) = await makeLibrary(folder, .openedFile, file: "Readme.md", defaults: defaults)
+        return (folder, library, editor)
+    }
+
+    @Test func aCopyOfAMinoteNoteIsStillNeverRenamed() async throws {
+        let (folder, library, editor) = try await openReadme("Readme\nbody") {
+            try ExtendedAttributes.set("Readme", named: NoteFileStore.autoNameAttribute, at: $0)
+        }
+        #expect(library.selectedNote?.isAutoNamed == false)
+
+        editor.type("Something else entirely\nbody", in: library)
+        await library.saveNow()
+
+        #expect(folder.fileNames == ["Neighbor.md", "Readme.md"])
+        #expect(folder.contents(of: "Readme.md") == "Something else entirely\nbody")
+    }
+
+    @Test func emptyingTheFileKeepsItAndBacksItUp() async throws {
+        let (folder, library, editor) = try await openReadme("Keep a copy of me")
+
+        editor.type("", in: library)
+        await library.prepareForTermination()
+
+        #expect(folder.fileNames == ["Neighbor.md", "Readme.md"])
+        #expect(folder.contents(of: "Readme.md") == "")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.backups.path).count == 1)
+    }
+
+    @Test func deletedWithoutEditsKeepsTheWindowAndWritesNothing() async throws {
+        let (folder, library, editor) = try await openReadme("Clean")
+
+        try FileManager.default.removeItem(at: folder.notes.appendingPathComponent("Readme.md"))
+        await library.rescanNow()
+        await library.waitUntilIdle()
+
+        #expect(folder.fileNames == ["Neighbor.md"])
+        #expect(library.notes.count == 1)
+        #expect(editor.displayedNoteID == library.selectedID)
+        #expect(editor.text == "Clean")
+    }
+
+    @Test func leavesTheLibrarysLastOpenedNoteAlone() async throws {
+        let defaults = freshDefaults()
+        defaults.set("Library note.md", forKey: Library.selectionKey)
+        let (_, library, editor) = try await openReadme("Mine", defaults: defaults)
+
+        editor.type("Mine, edited", in: library)
+        await library.saveNow()
+
+        #expect(defaults.string(forKey: Library.selectionKey) == "Library note.md")
+    }
+
+    @Test func libraryCommandsDoNothing() async throws {
+        let (folder, library, _) = try await openReadme("Only me")
+        let id = try #require(library.selectedID)
+
+        library.newNote()
+        await library.rename(id, to: "Other name")
+        await library.duplicate(id)
+        let receipt = await library.moveToTrash(id)
+        await library.waitUntilIdle()
+
+        #expect(receipt == nil)
+        #expect(library.notes.count == 1)
+        #expect(library.selectedID == id)
+        #expect(folder.fileNames == ["Neighbor.md", "Readme.md"])
+    }
+
+    @Test func aMissingFileReportsAnError() async throws {
+        let (_, library, editor) = try await openReadme("Soon gone") { try FileManager.default.removeItem(at: $0) }
+
+        #expect(library.notes.isEmpty)
+        #expect(library.selectedID == nil)
+        #expect(editor.displayedNoteID == nil)
+        #expect(library.presentedError?.title == "Couldn't open “Readme.md”")
     }
 }

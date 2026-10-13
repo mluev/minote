@@ -205,7 +205,6 @@ struct NoteFileStoreTests {
 
         let report = try await LibraryLocation.moveNotes(from: library.notes, to: destination, intoICloud: false,
                                                          downloadTimeout: .milliseconds(50))
-        #expect(report.moved == 2)
         #expect(report.leftBehind == ["Far away.md"])
         let moved = try FileManager.default.contentsOfDirectory(atPath: destination.path).sorted()
         #expect(moved == ["One.md", "Two 2.md", "Two.md"])

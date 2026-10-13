@@ -36,8 +36,6 @@ final class LibraryWindow: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    var isVisible: Bool { window?.isVisible == true }
-
     /// Brings the window forward, making it and loading the library the first time.
     func show() {
         let window = self.window ?? makeWindow()
