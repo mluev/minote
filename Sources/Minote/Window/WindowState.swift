@@ -3,7 +3,7 @@ import MinoteKit
 import SwiftUI
 import MinoteEditor
 
-/// Window-level state shared by the sidebar, the editor and the menus.
+/// One tab's state, shared by its sidebar, its editor and the menus.
 @Observable
 final class WindowState {
     var columnVisibility: NavigationSplitViewVisibility = .all
@@ -11,6 +11,15 @@ final class WindowState {
     var isEditorFocused = false
     /// Bumped by Edit ▸ Search All Notes to focus the search field.
     var searchFocusRequest = 0
+    /// Bumped to give the sidebar's list the keyboard (browsing with ↑/↓
+    /// went on into a new tab).
+    var sidebarFocusRequest = 0
+
+    /// The note this tab shows.
+    var noteID: Note.ID?
+    /// Typed in since it showed its note: the next note opens in a new tab
+    /// instead of replacing this one.
+    var isEdited = false
     /// The note being renamed (File ▸ Rename…), if any.
     var renaming: Note?
 

@@ -91,13 +91,15 @@ extension FormatAction {
 }
 
 extension View {
-    /// Shows the library's problems (a failed save, an unreadable file) as alerts.
+    /// Shows the library's problems (a failed save, an unreadable file) as
+    /// alerts. With several windows on one library, only the one `isEnabled`
+    /// shows them.
     @MainActor
-    public func libraryErrorAlert(_ library: Library) -> some View {
+    public func libraryErrorAlert(_ library: Library, isEnabled: Bool = true) -> some View {
         alert(
             library.presentedError?.title ?? "",
             isPresented: Binding(
-                get: { library.presentedError != nil },
+                get: { isEnabled && library.presentedError != nil },
                 set: { if !$0 { library.presentedError = nil } }
             ),
             presenting: library.presentedError
