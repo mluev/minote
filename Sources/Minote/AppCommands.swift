@@ -159,7 +159,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("0")
                 .disabled(preferences.fontSize == EditorTheme.defaultFontSize)
             Divider()
-            Picker("Appearance", selection: Binding(get: { theme }, set: PageTheme.select)) {
+            // A closure, not `PageTheme.select` itself: Swift 6.3 (CI's Xcode 26)
+            // crashes making the method into the binding's setter.
+            Picker("Appearance", selection: Binding(get: { theme }, set: { PageTheme.select($0) })) {
                 ForEach(PageTheme.allCases) { theme in
                     Text(theme.displayName).tag(theme)
                 }
