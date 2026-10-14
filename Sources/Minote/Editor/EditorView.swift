@@ -5,9 +5,10 @@ import SwiftUI
 
 /// SwiftUI host for the AppKit editor. Text never flows through SwiftUI state:
 /// the library drives which note is shown through the `NoteEditor` protocol.
+/// The editor belongs to its tab (`PageWindow`), which attaches it to the
+/// library as soon as the tab exists and detaches it when the tab closes.
 struct EditorView: NSViewRepresentable {
-    let library: Library
-    let windowState: WindowState
+    let editor: EditorCoordinator
     let configuration: EditorConfiguration
     /// Height of the toolbar area the editor scrolls under.
     let topInset: CGFloat
@@ -16,17 +17,14 @@ struct EditorView: NSViewRepresentable {
     let onUserEdit: () -> Void
 
     func makeCoordinator() -> EditorCoordinator {
-        EditorCoordinator(configuration: configuration)
+        editor
     }
 
     func makeNSView(context: Context) -> NSScrollView {
         let coordinator = context.coordinator
-        coordinator.library = library
-        coordinator.windowState = windowState
-        windowState.editor = coordinator
         coordinator.textView.onUserEdit = onUserEdit
+        coordinator.apply(configuration)
         coordinator.updateLayout(topInset: topInset, viewportHeight: viewportHeight)
-        library.attach(coordinator)
         return coordinator.scrollView
     }
 
@@ -35,10 +33,6 @@ struct EditorView: NSViewRepresentable {
         coordinator.textView.onUserEdit = onUserEdit
         coordinator.apply(configuration)
         coordinator.updateLayout(topInset: topInset, viewportHeight: viewportHeight)
-    }
-
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: EditorCoordinator) {
-        coordinator.library?.detach(coordinator)
     }
 }
 
@@ -183,6 +177,10 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             viewStates[current] = (textView.selectedRange(), scrollView.contentView.bounds.origin)
         }
         pruneState()
+        if displayedNoteID != note?.id || windowState?.noteID != note?.id {
+            windowState?.noteID = note?.id
+            windowState?.isEdited = false
+        }
         displayedNoteID = note?.id
         if let id = note?.id { rememberShown(id) }
         replaceText(with: note?.text ?? "")
@@ -219,7 +217,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     /// Called for a new note: start typing (leaving Preview).
     func focus() {
-        if configuration.preview, library?.selectedNote?.isDraft == true {
+        if configuration.preview, let id = displayedNoteID, library?.note(with: id)?.isDraft == true {
             windowState?.isPreviewing = false
         }
         textView.focus()
@@ -268,6 +266,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     func textDidChange(_ notification: Notification) {
         guard !isReplacingText, let id = displayedNoteID else { return }
         textRevision += 1
+        // Once per note, not per keystroke: typing never goes through SwiftUI.
+        if windowState?.isEdited == false { windowState?.isEdited = true }
         library?.editorDidChange(noteID: id, prefix: engine.titlePrefix())
         afterTextChange()
         if configuration.preview { outline.textDidChange() }

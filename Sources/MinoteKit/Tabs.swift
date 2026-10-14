@@ -4,7 +4,7 @@ import Foundation
 /// nobody has typed in is a passing look: the next note replaces it. Typing
 /// keeps it. A file opened from Finder is a document of its own: it is never
 /// replaced and never replaces.
-public enum TabPlacement: Equatable, Sendable {
+public enum OpenPlacement: Equatable, Sendable {
     /// Already open in a tab: that tab comes forward.
     case focusExisting
     /// The front tab shows it instead.
@@ -24,7 +24,7 @@ public enum TabPlacement: Equatable, Sendable {
     ///   - isOpen: the note or file is already shown in some tab.
     ///   - front: the tab in front, nil when no window is open.
     ///   - forceNewTab: the user asked for a new tab (⌘-click, Open in New Tab).
-    public static func of(isOpen: Bool, front: FrontTab?, forceNewTab: Bool = false) -> TabPlacement {
+    public static func of(isOpen: Bool, front: FrontTab?, forceNewTab: Bool = false) -> OpenPlacement {
         if isOpen { return .focusExisting }
         guard let front else { return .newWindow }
         if forceNewTab { return .newTab }

@@ -98,7 +98,7 @@ when *no editor shows it any more*.
 
 ### Pure, tested pieces
 
-- `TabPlacement`: given the front tab (library note or outside file, edited
+- `OpenPlacement`: given the front tab (library note or outside file, edited
   or not), and whether the note is already open, returns focus / replace /
   new tab. The behavior table above is its test.
 - `SavedTabs` (Codable): per window, the library notes' file names and the
@@ -146,7 +146,7 @@ when *no editor shows it any more*.
   draft dropped only when no editor shows it; an emptied note trashed only
   when its last editor leaves; text captured and saved from a background
   editor; disk changes reload the right editor; removal handler; one note,
-  one editor; relocation keeps pages). `TabPlacement` table. `SavedTabs`
+  one editor; relocation keeps pages). `OpenPlacement` table. `SavedTabs`
   restore. Every existing Library test passes unchanged (iOS path).
 - Interaction (DebugDriver scripts): replace when untouched, new tab after
   typing, a Finder file into the front window, light window stays light,
@@ -154,6 +154,27 @@ when *no editor shows it any more*.
 - By hand: drag a tab out, in and between windows; merge; full screen;
   Sepia and Dark; the fading chrome; VoiceOver reads tab titles.
 - CI keeps building the iOS app and running its UI tests.
+
+## Found while building
+
+- `TabPlacement` collided with SwiftUI's own type: it is `OpenPlacement`.
+- Saving tabs only at quit doesn't work: `NSSupportsSuddenTermination` is on,
+  so ⌘Q with nothing unsaved ends the app without asking the delegate. Tabs
+  are saved as they change (opened, closed, brought forward, reordered —
+  watched on the front window's tab group — or their note renamed),
+  coalesced into one write.
+- A file's name stays in the titlebar while it's alone in its window; with
+  the tab bar showing, the tabs name every page and the title hides.
+- Restoring waits for a library window: opening a file from Finder, then
+  showing the sidebar, keeps the last session's tabs for the next library
+  window; library tabs the user opens first take their place.
+- Checked against the running app (debug driver): replace when untouched,
+  new tab after typing, a note already open comes forward, Finder files
+  never replace and never are replaced by notes in a file tab, an untouched
+  library tab is replaced by a Finder file in place, ⌘T, closing saves and
+  drops blank drafts, a trashed note closes its background tab or shows a
+  neighbor in a window's only tab, the light window, tabs and the front tab
+  restored after quitting and after a hard kill.
 
 ## To verify early
 
@@ -164,7 +185,7 @@ when *no editor shows it any more*.
 ## Order of work
 
 1. Library serving several editors, `open`/removal hooks, relocation;
-   `TabPlacement`, `SavedTabs`. Tests. No visible change.
+   `OpenPlacement`, `SavedTabs`. Tests. No visible change.
 2. `PageWindow` + `Workspace` replace `LibraryWindow`/`FileSession`/
    `OpenedFiles`; native tabs, ⌘T, shortcuts, menus.
 3. The untouched rule, italic titles, sidebar opening.

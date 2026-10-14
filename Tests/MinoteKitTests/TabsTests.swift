@@ -7,30 +7,30 @@ struct TabsTests {
     // MARK: Where an opened note goes
 
     @Test func anUntouchedLibraryTabIsReplaced() {
-        #expect(TabPlacement.of(isOpen: false, front: .libraryNote(edited: false)) == .replaceFront)
+        #expect(OpenPlacement.of(isOpen: false, front: .libraryNote(edited: false)) == .replaceFront)
     }
 
     @Test func anEditedLibraryTabIsKept() {
-        #expect(TabPlacement.of(isOpen: false, front: .libraryNote(edited: true)) == .newTab)
+        #expect(OpenPlacement.of(isOpen: false, front: .libraryNote(edited: true)) == .newTab)
     }
 
     @Test func aFileFromFinderIsNeverReplaced() {
-        #expect(TabPlacement.of(isOpen: false, front: .outsideFile) == .newTab)
+        #expect(OpenPlacement.of(isOpen: false, front: .outsideFile) == .newTab)
     }
 
-    @Test(arguments: [TabPlacement.FrontTab.libraryNote(edited: false), .libraryNote(edited: true), .outsideFile, nil])
-    func anOpenNoteComesForward(_ front: TabPlacement.FrontTab?) {
-        #expect(TabPlacement.of(isOpen: true, front: front) == .focusExisting)
-        #expect(TabPlacement.of(isOpen: true, front: front, forceNewTab: true) == .focusExisting)
+    @Test(arguments: [OpenPlacement.FrontTab.libraryNote(edited: false), .libraryNote(edited: true), .outsideFile, nil])
+    func anOpenNoteComesForward(_ front: OpenPlacement.FrontTab?) {
+        #expect(OpenPlacement.of(isOpen: true, front: front) == .focusExisting)
+        #expect(OpenPlacement.of(isOpen: true, front: front, forceNewTab: true) == .focusExisting)
     }
 
     @Test func askingForANewTabNeverReplaces() {
-        #expect(TabPlacement.of(isOpen: false, front: .libraryNote(edited: false), forceNewTab: true) == .newTab)
+        #expect(OpenPlacement.of(isOpen: false, front: .libraryNote(edited: false), forceNewTab: true) == .newTab)
     }
 
     @Test func withoutAWindowANewOneOpens() {
-        #expect(TabPlacement.of(isOpen: false, front: nil) == .newWindow)
-        #expect(TabPlacement.of(isOpen: false, front: nil, forceNewTab: true) == .newWindow)
+        #expect(OpenPlacement.of(isOpen: false, front: nil) == .newWindow)
+        #expect(OpenPlacement.of(isOpen: false, front: nil, forceNewTab: true) == .newWindow)
     }
 
     // MARK: Tabs kept across launches

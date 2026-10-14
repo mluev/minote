@@ -5,10 +5,13 @@ import SwiftUI
 
 /// The library: every note, newest first, with search and a "+" button.
 /// Its own rows rather than a system list: the page's paper a shade darker,
-/// and a soft rounded selection instead of the accent-colored capsule.
+/// and a soft rounded selection instead of the accent-colored capsule. The
+/// highlighted row is this tab's note; opening a note follows the tab rules
+/// (`Workspace.open(note:)`).
 struct SidebarView: View {
     @Bindable var library: Library
     @Bindable var windowState: WindowState
+    let workspace: Workspace
     @Environment(\.undoManager) private var undoManager
     @FocusState private var isListFocused: Bool
     @FocusState private var isSearchFocused: Bool
@@ -21,12 +24,15 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(notes) { note in
-                        NoteRow(note: note, palette: theme.palette, isSelected: note.id == library.selectedID, isHovered: note.id == hoveredID)
+                        NoteRow(note: note, palette: theme.palette, isSelected: note.id == windowState.noteID, isHovered: note.id == hoveredID)
                             .id(note.id)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                library.selectedID = note.id
+                                // ⌘-click: a tab of its own.
+                                let newTab = NSEvent.modifierFlags.contains(.command)
                                 isListFocused = true
+                                workspace.open(note: note.id, newTab: newTab, focus: false)
+                                keepBrowsing(note.id)
                             }
                             .onHover { inside in
                                 if inside {
@@ -41,7 +47,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
-            .onChange(of: library.selectedID) { _, id in
+            .onChange(of: windowState.noteID, initial: true) { _, id in
                 guard let id else { return }
                 proxy.scrollTo(id)
             }
@@ -62,16 +68,19 @@ struct SidebarView: View {
             return .handled
         }
         .onKeyPress(.return) {
-            library.editor?.focus()
+            windowState.editor?.focus()
             return .handled
         }
         .onDeleteCommand {
-            if let id = library.selectedID { trash(id) }
+            if let id = windowState.noteID, library.note(with: id) != nil { trash(id) }
         }
         .searchable(text: $library.searchText, placement: .sidebar, prompt: "Search")
         .searchFocused($isSearchFocused)
         .onChange(of: windowState.searchFocusRequest) {
             isSearchFocused = true
+        }
+        .onChange(of: windowState.sidebarFocusRequest) {
+            isListFocused = true
         }
         .overlay {
             if notes.isEmpty && !library.searchText.isEmpty {
@@ -81,7 +90,7 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    library.newNote()
+                    workspace.newNote()
                 } label: {
                     Label("New Note", systemImage: "plus")
                 }
@@ -90,12 +99,23 @@ struct SidebarView: View {
         }
     }
 
-    /// ↑/↓ move to the previous or next note in the list.
+    /// ↑/↓ open the previous or next note in the list, under the tab rules:
+    /// browsing replaces an untouched tab, so it stays in one tab.
     private func select(offset: Int, in notes: [Note]) {
         guard !notes.isEmpty else { return }
-        let current = notes.firstIndex { $0.id == library.selectedID }
+        let current = notes.firstIndex { $0.id == windowState.noteID }
         let index = current.map { min(max($0 + offset, 0), notes.count - 1) } ?? 0
-        library.selectedID = notes[index].id
+        let id = notes[index].id
+        guard id != windowState.noteID else { return }
+        workspace.open(note: id, focus: false)
+        keepBrowsing(id)
+    }
+
+    /// The note may have opened in another tab: its list takes the keyboard,
+    /// so ↑/↓ go on from there.
+    private func keepBrowsing(_ id: Note.ID) {
+        guard windowState.noteID != id, let editor = library.editor(showing: id) as? EditorCoordinator else { return }
+        editor.windowState?.sidebarFocusRequest += 1
     }
 
     private func trash(_ id: Note.ID) {
@@ -104,6 +124,10 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func contextMenu(for note: Note) -> some View {
+        Button("Open in New Tab") {
+            workspace.open(note: note.id, newTab: true, focus: false)
+        }
+        Divider()
         Button("Show in Finder") {
             if let url = note.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }

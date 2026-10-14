@@ -32,38 +32,49 @@ import SwiftUI
 ///   outlinehover <i|rail|off> move the pointer over a heading's dash or row, or away
 ///   outlineclick <i>          click a heading in the card (opening it first)
 ///   outlinefilm <path> [dark|sepia|light]   PNG strip of the morph, rail to card
+///   tabs                      every window's tabs: title, kind, edited, which is selected
+///   open <file name> [new]    open a library note under the tab rules ("new": a tab of its own)
+///   openfile <path>           open a file as if from Finder
+///   newtab | newnote          File ▸ New Tab / New Note
+///   tab <i>                   select the front window's tab i (0-based)
+///   closetab                  close the tab in front
+///   savetabs                  save the open tabs now and read them back
+///   menus                     the File, View and Window menus with their shortcuts
+///   trash <file name>         Move to Trash (driver notes only)
 @MainActor
 enum DebugDriver {
     private static var timer: Timer?
     private static var directory: URL { URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("minote-driver") }
 
-    static func startIfRequested(windowState: WindowState) {
+    static func startIfRequested(workspace: Workspace) {
         guard ProcessInfo.processInfo.environment["MINOTE_DRIVER"] != nil else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         WriterTextView.assumesKeyWindow = true
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            MainActor.assumeIsolated { poll(windowState) }
+            MainActor.assumeIsolated { poll(workspace) }
         }
     }
 
     private static var busy = false
     private static var lastHit = "" 
 
-    private static func poll(_ windowState: WindowState) {
+    private static func poll(_ workspace: Workspace) {
         let input = directory.appendingPathComponent("in")
         guard !busy, let command = try? String(contentsOf: input, encoding: .utf8) else { return }
         try? FileManager.default.removeItem(at: input)
         busy = true
         Task { @MainActor in
-            let result = await run(command.trimmingCharacters(in: .whitespacesAndNewlines), windowState)
+            let result = await run(command.trimmingCharacters(in: .whitespacesAndNewlines), workspace)
             try? result.write(to: directory.appendingPathComponent("out.tmp"), atomically: false, encoding: .utf8)
             try? FileManager.default.moveItem(at: directory.appendingPathComponent("out.tmp"), to: directory.appendingPathComponent("out"))
             busy = false
         }
     }
 
-    private static func run(_ command: String, _ windowState: WindowState) async -> String {
-        guard let editor = windowState.editor, let window = editor.textView.window else { return "error: no editor" }
+    private static func run(_ command: String, _ workspace: Workspace) async -> String {
+        if let result = await runTabCommand(command, workspace) { return result }
+        guard let windowState = workspace.targetPage?.windowState, let editor = windowState.editor,
+              let window = editor.textView.window else { return "error: no editor" }
         let textView = editor.textView
         if !window.isKeyWindow {
             NSApp.activate(ignoringOtherApps: true)
@@ -205,6 +216,61 @@ enum DebugDriver {
     }
 
     // MARK: Events
+
+    /// Commands about tabs and windows; nil for the others.
+    private static func runTabCommand(_ command: String, _ workspace: Workspace) async -> String? {
+        let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
+        let rest = parts.count > 1 ? parts[1] : ""
+        switch parts.first ?? "" {
+        case "tabs":
+            break
+        case "open":
+            var name = rest
+            let newTab = name.hasSuffix(" new")
+            if newTab { name = String(name.dropLast(4)) }
+            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == name || $0.title == name }) else {
+                return "error: no note \(name)"
+            }
+            workspace.open(note: note.id, newTab: newTab)
+        case "openfile":
+            workspace.open(URL(fileURLWithPath: rest))
+        case "newtab":
+            workspace.newTab()
+        case "newnote":
+            workspace.newNote()
+        case "tab":
+            guard let index = Int(rest) else { return "error: bad index" }
+            workspace.selectTab(at: index)
+        case "closetab":
+            workspace.targetPage?.window.performClose(nil)
+        case "trash":
+            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == rest || $0.title == rest }) else {
+                return "error: no note \(rest)"
+            }
+            await workspace.library.moveToTrash(note.id)
+        case "menus":
+            // The File, View and Window menus with their shortcuts.
+            for menu in NSApp.mainMenu?.items.compactMap(\.submenu) ?? [] {
+                // As if opened: some items are added only then.
+                menu.delegate?.menuNeedsUpdate?(menu)
+                NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+                menu.update()
+            }
+            return (NSApp.mainMenu?.items ?? []).filter { ["File", "View", "Window"].contains($0.title) }.map { menu in
+                menu.title + ":\n" + (menu.submenu?.items ?? []).filter { !$0.isSeparatorItem && !$0.isHidden }.map { item in
+                    "  \(item.title) \(item.keyEquivalentModifierMask.rawValue >> 17) \(item.keyEquivalent)\(item.isEnabled ? "" : " (disabled)")"
+                }.joined(separator: "\n")
+            }.joined(separator: "\n")
+        case "savetabs":
+            workspace.saveTabs()
+            let saved = SavedTabs.load().map { "\($0.windows)" } ?? "nothing saved"
+            return "ordered windows \(NSApp.orderedWindows.count), saved \(saved)"
+        default:
+            return nil
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        return workspace.describeTabs()
+    }
 
     private static func click(at point: NSPoint, modifiers: NSEvent.ModifierFlags, in textView: WriterTextView) {
         guard let window = textView.window else { return }

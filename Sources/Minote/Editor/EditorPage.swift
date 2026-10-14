@@ -3,10 +3,9 @@ import MinoteKit
 import SwiftUI
 
 /// The page: the editor set up from the View menu, with the word counter and
-/// the text settings button. The library window shows it beside the sidebar;
-/// an opened file's window shows only this.
+/// the text settings button. Every tab shows it beside the sidebar.
 struct EditorPage: View {
-    let library: Library
+    let editor: EditorCoordinator
     let windowState: WindowState
     var onUserEdit: () -> Void = {}
 
@@ -14,8 +13,8 @@ struct EditorPage: View {
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
 
-    init(library: Library, windowState: WindowState, onUserEdit: @escaping () -> Void = {}) {
-        self.library = library
+    init(editor: EditorCoordinator, windowState: WindowState, onUserEdit: @escaping () -> Void = {}) {
+        self.editor = editor
         self.windowState = windowState
         self.onUserEdit = onUserEdit
     }
@@ -23,8 +22,7 @@ struct EditorPage: View {
     var body: some View {
         GeometryReader { proxy in
             EditorView(
-                library: library,
-                windowState: windowState,
+                editor: editor,
                 configuration: preferences.configuration(preview: windowState.isPreviewing, paper: theme.paper),
                 topInset: proxy.safeAreaInsets.top,
                 viewportHeight: proxy.size.height + proxy.safeAreaInsets.top,
