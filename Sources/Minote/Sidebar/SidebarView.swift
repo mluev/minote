@@ -3,15 +3,17 @@ import MinoteEditor
 import MinoteKit
 import SwiftUI
 
-/// The library: every note, newest first, with search and a "+" button.
+/// The library's notes, newest first (filtered by the search above them).
 /// Its own rows rather than a system list: the page's paper a shade darker,
-/// and a soft rounded selection instead of the accent-colored capsule.
+/// and a soft rounded selection instead of the accent-colored capsule. The
+/// highlighted row is the front tab's note; opening a note follows the tab
+/// rules (`Workspace.open(note:)`).
 struct SidebarView: View {
     @Bindable var library: Library
-    @Bindable var windowState: WindowState
+    @Bindable var state: WindowState
+    let workspace: Workspace
     @Environment(\.undoManager) private var undoManager
     @FocusState private var isListFocused: Bool
-    @FocusState private var isSearchFocused: Bool
     @ViewState private var hoveredID: Note.ID? = nil
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
 
@@ -21,12 +23,15 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(notes) { note in
-                        NoteRow(note: note, palette: theme.palette, isSelected: note.id == library.selectedID, isHovered: note.id == hoveredID)
+                        NoteRow(note: note, palette: theme.palette, isSelected: note.id == selectedID, isHovered: note.id == hoveredID)
                             .id(note.id)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                library.selectedID = note.id
+                                // ⌘-click: a tab of its own.
+                                let newTab = NSEvent.modifierFlags.contains(.command)
                                 isListFocused = true
+                                workspace.open(note: note.id, newTab: newTab, focus: false)
+                                keepBrowsing(note.id)
                             }
                             .onHover { inside in
                                 if inside {
@@ -41,17 +46,16 @@ struct SidebarView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
-            .onChange(of: library.selectedID) { _, id in
+            .onChange(of: selectedID, initial: true) { _, id in
                 guard let id else { return }
                 proxy.scrollTo(id)
             }
         }
-        .background(Color(nsColor: theme.palette.sidebarBackground).ignoresSafeArea())
         .focusable()
         .focusEffectDisabled()
         .focused($isListFocused)
         .onChange(of: isListFocused) { _, focused in
-            windowState.isSidebarFocused = focused
+            state.isSidebarFocused = focused
         }
         .onKeyPress(.upArrow) {
             select(offset: -1, in: notes)
@@ -62,40 +66,46 @@ struct SidebarView: View {
             return .handled
         }
         .onKeyPress(.return) {
-            library.editor?.focus()
+            state.selectedTab?.editor.focus()
             return .handled
         }
         .onDeleteCommand {
-            if let id = library.selectedID { trash(id) }
+            if let id = selectedID, library.note(with: id) != nil { trash(id) }
         }
-        .searchable(text: $library.searchText, placement: .sidebar, prompt: "Search")
-        .searchFocused($isSearchFocused)
-        .onChange(of: windowState.searchFocusRequest) {
-            isSearchFocused = true
+        .onChange(of: state.sidebarFocusRequest) {
+            isListFocused = true
         }
         .overlay {
             if notes.isEmpty && !library.searchText.isEmpty {
                 ContentUnavailableView.search(text: library.searchText)
             }
         }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    library.newNote()
-                } label: {
-                    Label("New Note", systemImage: "plus")
-                }
-                .help("New Note")
-            }
-        }
     }
 
-    /// ↑/↓ move to the previous or next note in the list.
+    /// The front tab's note, if it's one of the library's.
+    private var selectedID: Note.ID? {
+        guard let tab = state.selectedTab, tab.isLibraryTab else { return nil }
+        return tab.noteID
+    }
+
+    /// ↑/↓ open the previous or next note in the list, under the tab rules:
+    /// browsing replaces an untouched tab, so it stays in one tab.
     private func select(offset: Int, in notes: [Note]) {
         guard !notes.isEmpty else { return }
-        let current = notes.firstIndex { $0.id == library.selectedID }
+        let current = notes.firstIndex { $0.id == selectedID }
         let index = current.map { min(max($0 + offset, 0), notes.count - 1) } ?? 0
-        library.selectedID = notes[index].id
+        let id = notes[index].id
+        guard id != selectedID else { return }
+        workspace.open(note: id, focus: false)
+        keepBrowsing(id)
+    }
+
+    /// The note may already be open in another window: its list takes the
+    /// keyboard, so ↑/↓ go on from there.
+    private func keepBrowsing(_ id: Note.ID) {
+        guard let editor = library.editor(showing: id) as? EditorCoordinator, let window = editor.tab?.window,
+              window.state !== state else { return }
+        window.state.sidebarFocusRequest += 1
     }
 
     private func trash(_ id: Note.ID) {
@@ -104,12 +114,16 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func contextMenu(for note: Note) -> some View {
+        Button("Open in New Tab") {
+            workspace.open(note: note.id, newTab: true, focus: false)
+        }
+        Divider()
         Button("Show in Finder") {
             if let url = note.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         .disabled(note.isDraft)
         Button("Rename…") {
-            windowState.renaming = note
+            state.renaming = note
         }
         .disabled(note.isBlankDraft)
         Button("Duplicate") {
@@ -150,7 +164,7 @@ struct NoteRow: View {
         .padding(.vertical, 10)
         .background {
             if isSelected || isHovered {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: SidebarMetrics.rowCornerRadius, style: .continuous)
                     .fill(Color(nsColor: isSelected ? palette.sidebarSelection : palette.sidebarHover))
             }
         }

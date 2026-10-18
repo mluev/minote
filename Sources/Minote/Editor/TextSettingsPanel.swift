@@ -2,18 +2,23 @@ import AppKit
 import MinoteEditor
 import SwiftUI
 
-/// The "Aa" button in the titlebar: the View menu's reading settings (size,
-/// theme, font) within reach of the page, for writing and Preview alike.
+/// The "Aa" button at the end of the tab bar: the View menu's reading
+/// settings (size, theme, font) within reach of the page, for writing and
+/// Preview alike.
 struct TextSettingsButton: View {
     @Bindable var windowState: WindowState
+    let palette: EditorPalette
 
     var body: some View {
         Button {
             windowState.isShowingTextSettings.toggle()
         } label: {
-            Label("Text Settings", systemImage: "textformat")
+            Image(systemName: "textformat")
+                .font(.system(size: 13, weight: .medium))
         }
+        .buttonStyle(ChromeButtonStyle(palette: palette, isActive: windowState.isShowingTextSettings))
         .help("Font, Size and Theme")
+        .accessibilityLabel("Text Settings")
         .popover(isPresented: $windowState.isShowingTextSettings, arrowEdge: .bottom) {
             TextSettingsPanel()
         }

@@ -96,7 +96,23 @@ public final class Library {
         }
     }
 
+    /// The editor in front. The Mac has one editor per tab and several can show
+    /// this library's notes at once; `selectedID` is the note in this one.
     @ObservationIgnored public private(set) weak var editor: (any NoteEditor)?
+    /// Opens a note on the user's behalf (a link, Duplicate, undoing Move to
+    /// Trash, New Note). The Mac routes it to a tab; without one, the note is
+    /// selected.
+    @ObservationIgnored public var openHandler: ((Note.ID) -> Void)?
+    /// Asked for each editor showing a note that was removed (trashed, or
+    /// deleted elsewhere). Returns true if that editor goes away (its tab
+    /// closes); otherwise it shows a neighbor, or a new draft.
+    @ObservationIgnored public var shownNoteRemovedHandler: ((any NoteEditor) -> Bool)?
+
+    /// Every attached editor, least recently in front first.
+    @ObservationIgnored private var editors: [WeakEditor] = []
+    /// Set while the library moves `selectedID` itself (the front editor
+    /// changed), so the change isn't taken for a request to show a note.
+    @ObservationIgnored private var isSyncingSelection = false
 
     @ObservationIgnored private var store: NoteFileStore
     @ObservationIgnored private var watcher: (any LibraryWatching)?
@@ -163,7 +179,7 @@ public final class Library {
             } else if let first = notes.first {
                 selectedID = first.id
             } else {
-                newNote()
+                selectNewDraft()
             }
         }
         watcher?.start { [weak self] in self?.scheduleRescan() }
@@ -176,8 +192,13 @@ public final class Library {
     /// everything first; with `movingNotes`, brings the notes along.
     public func relocate(to newStore: NoteFileStore, watcher newWatcher: (any LibraryWatching)?, movingNotes: Bool) async {
         let oldDirectory = store.directory
+        // Each editor shows the same file again afterwards; the front one last,
+        // so it stays in front.
+        var shown: [(editor: any NoteEditor, name: String?)] = []
         if isLoaded {
             await saveNow()
+            shown = liveEditors.map { ($0, $0.displayedNoteID.flatMap(note(with:))?.fileURL?.lastPathComponent) }
+            for (editor, _) in shown { show(nil, in: editor) }
             selectedID = nil
             await waitUntilIdle()
             watcher?.stop()
@@ -208,7 +229,17 @@ public final class Library {
         watcher = newWatcher
         isLoaded = false
         isTerminating = false
+        // Loading selects a note; the editors are given theirs below.
+        editor = nil
         await load()
+        let loaded = selectedID
+        for (editor, name) in shown where editors.contains(where: { $0.value === editor }) {
+            if let name, let note = notes.first(where: { $0.fileURL?.lastPathComponent == name }), show(note.id, in: editor) {
+                continue
+            }
+            if editor === shown.last?.editor, let loaded, show(loaded, in: editor) { continue }
+            replaceRemovedNote(in: editor, neighbor: nil)
+        }
         if let problem {
             logger.error("\(problem.title, privacy: .public): \(problem.message, privacy: .public)")
             presentedError = problem
@@ -217,17 +248,61 @@ public final class Library {
 
     // MARK: Editor
 
+    /// Adds an editor in front, showing the selected note (or nothing, if
+    /// another editor already shows it).
     public func attach(_ editor: any NoteEditor) {
-        self.editor = editor
-        editor.display(selectedNote)
+        if !show(selectedID, in: editor) { show(nil, in: editor) }
     }
 
-    /// The editor is going away (window closed). Keeps its text and saves.
+    /// Shows a note in `editor`, attaching it if needed, and brings that editor
+    /// to the front. The note it showed before is wrapped up (see
+    /// `endSession`) once no editor shows it. Returns false, changing nothing,
+    /// if another editor shows the note: two editors on one file would
+    /// overwrite each other.
+    @discardableResult
+    public func show(_ id: Note.ID?, in editor: any NoteEditor) -> Bool {
+        if let id {
+            guard note(with: id) != nil else { return false }
+            if let other = self.editor(showing: id), other !== editor { return false }
+        }
+        let isNew = !editors.contains { $0.value === editor }
+        let previous = editor.displayedNoteID.flatMap(note(with:))
+        if isNew || editor.displayedNoteID != id {
+            if let previous { captureEditorText(of: previous) }
+            editor.display(id.flatMap(note(with:)))
+        }
+        bringToFront(editor)
+        let deselected = moveSelection(to: id)
+        wrapUpIfClosed([previous, deselected])
+        return true
+    }
+
+    /// The editor's window came forward: the selection follows its note.
+    public func activate(_ editor: any NoteEditor) {
+        guard editors.contains(where: { $0.value === editor }) else { return }
+        bringToFront(editor)
+        wrapUpIfClosed([moveSelection(to: editor.displayedNoteID)])
+    }
+
+    /// The editor is going away (its tab or window closed). Keeps its text,
+    /// saves, and wraps its note up unless another editor still shows it.
     public func detach(_ editor: any NoteEditor) {
-        guard self.editor === editor else { return }
-        if let note = selectedNote { captureEditorText(of: note) }
-        self.editor = nil
+        guard let index = editors.firstIndex(where: { $0.value === editor }) else { return }
+        let shown = editor.displayedNoteID.flatMap(note(with:))
+        if let shown { captureEditorText(of: shown) }
+        editors.remove(at: index)
+        var deselected: Note?
+        if self.editor === editor {
+            self.editor = liveEditors.last
+            if let front = self.editor { deselected = moveSelection(to: front.displayedNoteID) }
+        }
+        wrapUpIfClosed([shown, deselected])
         Task { await saveNow() }
+    }
+
+    /// The editor showing the note, if any.
+    public func editor(showing id: Note.ID) -> (any NoteEditor)? {
+        liveEditors.first { $0.displayedNoteID == id }
     }
 
     /// Called by the editor after every edit, with the first
@@ -251,10 +326,26 @@ public final class Library {
             editor?.focus()
             return
         }
-        let note = Note(draftCreatedAt: Date())
-        notes.insert(note, at: 0)
-        selectedID = note.id
+        open(insertDraft().id)
         editor?.focus()
+    }
+
+    /// A new, empty draft at the top of the list, not shown anywhere yet: for
+    /// an editor of its own (File ▸ New Tab).
+    public func makeDraft() -> Note.ID? {
+        guard !isSingleFile else { return nil }
+        searchText = ""
+        return insertDraft().id
+    }
+
+    /// Opens a note on the user's behalf: through `openHandler` when there is
+    /// one, otherwise by selecting it.
+    public func open(_ id: Note.ID) {
+        if let openHandler {
+            openHandler(id)
+        } else {
+            selectedID = id
+        }
     }
 
     /// Moves the note's file to the Trash (drafts are just dropped).
@@ -306,7 +397,7 @@ public final class Library {
         }
         await settledRescan()
         if let note = notes.first(where: { $0.fileURL == url }) {
-            selectedID = note.id
+            open(note.id)
         }
     }
 
@@ -348,7 +439,7 @@ public final class Library {
             let copy = try await store.duplicate(url)
             await settledRescan()
             if let duplicate = notes.first(where: { $0.fileURL == copy }) {
-                selectedID = duplicate.id
+                open(duplicate.id)
             }
         } catch {
             report("Couldn't duplicate the note", error)
@@ -359,9 +450,9 @@ public final class Library {
     /// first line changed. Returns once those writes have landed (or failed).
     /// Used when the app is deactivated, the window closes, or the app quits.
     public func saveNow() async {
-        if let current = selectedNote { captureEditorText(of: current) }
+        for note in notes { captureEditorText(of: note) }
         var writes: [Task<Void?, Never>] = []
-        for note in notes where note.hasUnsavedChanges || saveTimers[note.id] != nil || note.id == selectedID {
+        for note in notes where note.hasUnsavedChanges || saveTimers[note.id] != nil || isOpen(note) {
             saveTimers.removeValue(forKey: note.id)?.cancel()
             writes.append(enqueue(note.id) { [weak self] in await self?.performSave(note, rename: .always) })
         }
@@ -426,7 +517,7 @@ public final class Library {
     /// next to the open note, for another app to open.
     public func followLink(to path: String) -> URL? {
         if let note = note(linkedAs: path) {
-            selectedID = note.id
+            open(note.id)
             return nil
         }
         return selectedNote?.fileURL.map { URL(fileURLWithPath: path, relativeTo: $0.deletingLastPathComponent()) }
@@ -434,13 +525,59 @@ public final class Library {
 
     // MARK: Selection
 
+    /// Someone set `selectedID`: the front editor shows that note, or, if
+    /// another editor already shows it, that editor comes to the front.
     private func selectionDidChange(from oldID: Note.ID?) {
-        if let oldID, let old = note(with: oldID) {
-            captureEditorText(of: old)
-            endSession(old)
+        guard !isSyncingSelection else { return }
+        var left: Note?
+        if let front = editor {
+            if let id = selectedID, let other = editor(showing: id), other !== front {
+                bringToFront(other)
+            } else {
+                left = front.displayedNoteID.flatMap(note(with:))
+                if let left { captureEditorText(of: left) }
+                front.display(selectedNote)
+            }
         }
-        editor?.display(selectedNote)
         persistSelection()
+        wrapUpIfClosed([oldID.flatMap(note(with:)), left])
+    }
+
+    /// Moves `selectedID` without showing anything (the editors already show
+    /// what they should). Returns the note that was selected before.
+    private func moveSelection(to id: Note.ID?) -> Note? {
+        guard selectedID != id else { return nil }
+        let old = selectedID.flatMap(note(with:))
+        isSyncingSelection = true
+        selectedID = id
+        isSyncingSelection = false
+        persistSelection()
+        return old
+    }
+
+    /// Whether the note is open: selected, or shown by some editor.
+    private func isOpen(_ note: Note) -> Bool {
+        selectedID == note.id || editor(showing: note.id) != nil
+    }
+
+    /// Wraps up each of these notes that is no longer open (once each).
+    private func wrapUpIfClosed(_ candidates: [Note?]) {
+        var done = Set<Note.ID>()
+        for case let note? in candidates where !done.contains(note.id) {
+            done.insert(note.id)
+            if contains(note), !isOpen(note) { endSession(note) }
+        }
+    }
+
+    private var liveEditors: [any NoteEditor] {
+        editors.removeAll { $0.value == nil }
+        return editors.compactMap(\.value)
+    }
+
+    private func bringToFront(_ editor: any NoteEditor) {
+        editors.removeAll { $0.value == nil || $0.value === editor }
+        editors.append(WeakEditor(value: editor))
+        self.editor = editor
     }
 
     private func persistSelection() {
@@ -449,21 +586,20 @@ public final class Library {
         defaults.set(selectedNote?.fileURL?.lastPathComponent, forKey: Self.selectionKey)
     }
 
-    /// Wraps up a note the user just left: drops it if it's an empty draft,
-    /// saves it, renames it to follow its first line, and trashes it quietly
-    /// if the user emptied an auto-named file.
+    /// Wraps up a note the user just left (no editor shows it any more):
+    /// drops it if it's an empty draft, saves it, renames it to follow its
+    /// first line, and trashes it quietly if the user emptied an auto-named file.
     private func endSession(_ note: Note) {
         enqueue(note.id) { [weak self] in
             guard let self, self.contains(note) else { return }
-            let isCurrent = self.selectedID == note.id
             if note.isDraft && note.text.isBlank {
-                if !isCurrent { self.remove(note) }
+                if !self.isOpen(note) { self.remove(note) }
                 note.savedRevision = note.revision
                 self.updateSuddenTermination()
                 return
             }
             await self.performSave(note, rename: .always)
-            if !isCurrent, self.selectedID != note.id {
+            if !self.isOpen(note) {
                 await self.trashIfEmptied(note)
             }
         }
@@ -553,7 +689,7 @@ public final class Library {
         note.savedRevision = max(note.savedRevision, revision)
         retryAttempts[note.id] = nil
 
-        let editingTitle = editor?.displayedNoteID == note.id && editor?.isCaretInTitleLine == true
+        let editingTitle = editor(showing: note.id)?.isCaretInTitleLine == true
         if rename == .always || !editingTitle {
             await renameIfNeeded(note)
         }
@@ -728,9 +864,7 @@ public final class Library {
             note.text = text
             note.modified = file.stamp.modified
             note.updateDerived(from: text.prefix(NoteNaming.prefixLength))
-            if let editor, editor.displayedNoteID == note.id {
-                editor.reloadText(text)
-            }
+            editor(showing: note.id)?.reloadText(text)
         }
 
         for note in notes {
@@ -769,28 +903,56 @@ public final class Library {
         notes.contains { $0 === note }
     }
 
-    /// Removes a note from the list. If it was selected, selects its neighbor,
-    /// or starts a new draft when the library is empty.
+    /// Removes a note from the list. An editor showing it goes away or shows
+    /// its neighbor; if it was selected without an editor, the neighbor is
+    /// selected. With no notes left, a new draft takes its place.
     private func remove(_ note: Note) {
         let visible = visibleNotes
         var neighbor: Note?
         if let index = visible.firstIndex(where: { $0 === note }) {
             neighbor = visible.indices.contains(index + 1) ? visible[index + 1] : (index > 0 ? visible[index - 1] : nil)
         }
+        let showing = liveEditors.filter { $0.displayedNoteID == note.id }
         notes.removeAll { $0 === note }
         saveTimers.removeValue(forKey: note.id)?.cancel()
         firstUnsavedEdit[note.id] = nil
         retryAttempts[note.id] = nil
+        for editor in showing where shownNoteRemovedHandler?(editor) != true {
+            replaceRemovedNote(in: editor, neighbor: neighbor)
+        }
         if selectedID == note.id {
             if let neighbor {
                 selectedID = neighbor.id
             } else if let first = notes.first {
                 selectedID = first.id
             } else {
-                newNote()
+                selectNewDraft()
             }
         }
         updateSuddenTermination()
+    }
+
+    /// Shows something else in an editor whose note is gone: the neighbor, or
+    /// the first note no editor shows, or a new draft.
+    private func replaceRemovedNote(in editor: any NoteEditor, neighbor: Note?) {
+        if let neighbor, self.editor(showing: neighbor.id) == nil, show(neighbor.id, in: editor) { return }
+        if let free = notes.first(where: { self.editor(showing: $0.id) == nil }), show(free.id, in: editor) { return }
+        searchText = ""
+        show(insertDraft().id, in: editor)
+        editor.focus()
+    }
+
+    /// The library is empty: a new draft, selected and ready for typing.
+    private func selectNewDraft() {
+        searchText = ""
+        selectedID = insertDraft().id
+        editor?.focus()
+    }
+
+    private func insertDraft() -> Note {
+        let note = Note(draftCreatedAt: Date())
+        notes.insert(note, at: 0)
+        return note
     }
 
     private func sortNotes() {
@@ -804,15 +966,14 @@ public final class Library {
         if !sorted.elementsEqual(notes, by: ===) { notes = sorted }
     }
 
-    /// Copies the editor's live text into the note, if it's the one displayed and has edits.
+    /// Copies the live text of the editor showing the note, if it has edits.
     private func captureEditorText(of note: Note) {
-        guard note.hasUnsavedChanges, let editor, editor.displayedNoteID == note.id else { return }
+        guard note.hasUnsavedChanges, let editor = editor(showing: note.id) else { return }
         note.text = editor.currentText()
     }
 
     private func editorText(of note: Note) -> String {
-        if let editor, editor.displayedNoteID == note.id { return editor.currentText() }
-        return note.text
+        editor(showing: note.id)?.currentText() ?? note.text
     }
 
     private func updateSuddenTermination() {
@@ -832,4 +993,10 @@ public final class Library {
         logger.error("\(title, privacy: .public): \(error.localizedDescription, privacy: .public)")
         presentedError = LibraryError(title: title, message: error.localizedDescription)
     }
+}
+
+/// Editors are owned by their windows; the library only points at them.
+@MainActor
+private struct WeakEditor {
+    weak var value: (any NoteEditor)?
 }

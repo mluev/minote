@@ -5,77 +5,91 @@ import SwiftUI
 
 /// Every action lives in the system menus; the window stays a blank page.
 struct AppCommands: Commands {
-    let libraryWindow: LibraryWindow
-    let openedFiles: OpenedFiles
+    let workspace: Workspace
 
-    private var library: Library { libraryWindow.library }
-    private var windowState: WindowState { libraryWindow.windowState }
-    private var storage: LibraryStorageSwitcher { libraryWindow.storage }
+    private var library: Library { workspace.library }
+    private var storage: LibraryStorageSwitcher { workspace.storage }
     private var preferences = EditorPreferences()
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
 
-    init(libraryWindow: LibraryWindow, openedFiles: OpenedFiles) {
-        self.libraryWindow = libraryWindow
-        self.openedFiles = openedFiles
+    init(workspace: Workspace) {
+        self.workspace = workspace
     }
 
     var body: some Commands {
         // No Settings window: every preference lives in the menus.
         CommandGroup(replacing: .appSettings) {}
-        SidebarCommands()
         TextEditingCommands()
         fileCommands
         editCommands
         CommandMenu("Format") {
-            FormatMenuItems(isEnabled: front.windowState.isEditorFocused) { front.windowState.editor?.perform($0) }
+            FormatMenuItems(isEnabled: front?.isEditorFocused ?? false) { front?.editor.perform($0) }
         }
         viewCommands
+        windowCommands
         CommandGroup(replacing: .help) {}
     }
 
-    /// The window the menus act on: an opened file's when it's in front,
-    /// otherwise the library's.
-    private var front: (library: Library, windowState: WindowState) {
-        if let session = openedFiles.frontSession { return (session.library, session.windowState) }
-        return (library, windowState)
+    /// The tab the menus act on: the front window's.
+    private var front: PageTab? { workspace.frontTab }
+
+    /// The window in front.
+    private var frontWindow: WindowState? { workspace.frontWindow?.state }
+
+    /// The note of the tab in front, if it's one of the library's: library
+    /// commands (Duplicate, Rename, Move to Trash) act on it, not on files
+    /// opened from elsewhere.
+    private var frontLibraryNote: Note? {
+        guard let front, front.isLibraryTab else { return nil }
+        return front.note
     }
 
-    /// Library commands don't apply to an opened file.
-    private var isFileInFront: Bool { openedFiles.frontSession != nil }
+    /// The note of the tab in front, whichever library it's in.
+    private var frontNote: Note? { front?.note }
 
     // MARK: File
 
     @CommandsBuilder private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Note") { libraryWindow.newNote() }
+            Button("New Note") { workspace.newNote() }
                 .keyboardShortcut("n")
-            Button("Open…") { openedFiles.showOpenPanel() }
+            Button("New Tab") { workspace.newTab() }
+                .keyboardShortcut("t")
+            Button("Open…") { workspace.showOpenPanel() }
                 .keyboardShortcut("o")
             Menu("Open Recent") {
-                ForEach(openedFiles.recents, id: \.self) { url in
-                    Button(openedFiles.recentTitle(for: url)) { openedFiles.openRecent(url) }
+                ForEach(workspace.recents, id: \.self) { url in
+                    Button(workspace.recentTitle(for: url)) { workspace.openRecent(url) }
                 }
                 Divider()
-                Button("Clear Menu") { openedFiles.clearRecents() }
-                    .disabled(openedFiles.recents.isEmpty)
+                Button("Clear Menu") { workspace.clearRecents() }
+                    .disabled(workspace.recents.isEmpty)
             }
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Close Tab") { workspace.closeFrontTab() }
+                .keyboardShortcut("w")
+                .disabled(front == nil)
+            Button("Close Window") { workspace.frontWindow?.window.performClose(nil) }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(workspace.frontWindow == nil)
         }
         CommandGroup(after: .newItem) {
             Button("Duplicate") {
-                guard let id = library.selectedID else { return }
+                guard let id = frontLibraryNote?.id else { return }
                 Task { await library.duplicate(id) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(isFileInFront || library.selectedNote?.isDraft ?? true)
-            Button("Rename…") { windowState.renaming = library.selectedNote }
-                .disabled(isFileInFront || library.selectedNote?.isBlankDraft ?? true)
+            .disabled(frontLibraryNote?.isDraft ?? true)
+            Button("Rename…") { frontWindow?.renaming = frontLibraryNote }
+                .disabled(frontLibraryNote?.isBlankDraft ?? true)
             Divider()
             Button("Show in Finder") {
-                if let url = front.library.selectedNote?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                if let url = frontNote?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(front.library.selectedNote?.fileURL == nil)
+            .disabled(frontNote?.fileURL == nil)
             Button("Show Library in Finder") { NSWorkspace.shared.open(library.directory) }
             Toggle(storage.isICloudAvailable ? "Keep Notes in iCloud Drive" : "Keep Notes in iCloud Drive (iCloud Unavailable)", isOn: Binding(
                 get: { storage.storage == .iCloud },
@@ -85,20 +99,19 @@ struct AppCommands: Commands {
             Divider()
             // ⌘⌫ only while the list has focus; in the editor it deletes to the start of the line.
             Button("Move to Trash") {
-                guard let id = library.selectedID else { return }
+                guard let id = frontLibraryNote?.id else { return }
                 library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(isFileInFront || !windowState.isSidebarFocused || library.selectedNote == nil)
+            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
-                let front = self.front
-                let title = front.library.selectedNote?.title ?? ""
-                front.windowState.editor?.printNote(title: title.isEmpty ? "Note" : title)
+                let title = frontNote?.title ?? ""
+                front?.editor.printNote(title: title.isEmpty ? "Note" : title)
             }
             .keyboardShortcut("p")
-            .disabled(front.library.selectedNote == nil)
+            .disabled(frontNote == nil)
         }
     }
 
@@ -107,9 +120,10 @@ struct AppCommands: Commands {
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
             Button("Search All Notes") {
-                libraryWindow.show()
-                windowState.columnVisibility = .all
-                windowState.searchFocusRequest += 1
+                if workspace.frontWindow == nil { workspace.showLibrary() }
+                guard let window = workspace.frontWindow?.state ?? workspace.targetWindow?.state else { return }
+                window.isSidebarVisible = true
+                window.searchFocusRequest += 1
             }
             .keyboardShortcut("f", modifiers: [.command, .shift])
         }
@@ -118,11 +132,19 @@ struct AppCommands: Commands {
     // MARK: View
 
     @CommandsBuilder private var viewCommands: some Commands {
+        CommandGroup(replacing: .sidebar) {
+            Button(frontWindow?.isSidebarVisible == false ? "Show Sidebar" : "Hide Sidebar") {
+                guard let window = frontWindow else { return }
+                withAnimation(.smooth(duration: 0.22)) { window.isSidebarVisible.toggle() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .disabled(frontWindow == nil)
+        }
         CommandGroup(after: .sidebar) {
             Divider()
-            Toggle("Preview", isOn: Binding(get: { front.windowState.isPreviewing }, set: { front.windowState.isPreviewing = $0 }))
+            Toggle("Preview", isOn: Binding(get: { front?.isPreviewing ?? false }, set: { front?.isPreviewing = $0 }))
                 .keyboardShortcut("r")
-                .disabled(front.library.selectedNote == nil)
+                .disabled(frontNote == nil)
             Divider()
             Toggle("Focus Mode", isOn: preferences.$focusEnabled)
                 .keyboardShortcut("d")
@@ -131,7 +153,7 @@ struct AppCommands: Commands {
                 Text("Paragraph").tag(FocusMode.paragraph)
             }
             Toggle("Typewriter Mode", isOn: preferences.$typewriter)
-                .keyboardShortcut("t")
+                .keyboardShortcut("t", modifiers: [.command, .control])
             Toggle("Syntax Highlight", isOn: preferences.$syntaxHighlight)
                 .keyboardShortcut("h", modifiers: [.command, .shift])
             Toggle("Word Count", isOn: $showCounter)
@@ -153,11 +175,31 @@ struct AppCommands: Commands {
                 .keyboardShortcut("0")
                 .disabled(preferences.fontSize == EditorTheme.defaultFontSize)
             Divider()
-            Picker("Appearance", selection: Binding(get: { theme }, set: PageTheme.select)) {
+            // A closure, not `PageTheme.select` itself: Swift 6.3 (CI's Xcode 26)
+            // crashes making the method into the binding's setter.
+            Picker("Appearance", selection: Binding(get: { theme }, set: { PageTheme.select($0) })) {
                 ForEach(PageTheme.allCases) { theme in
                     Text(theme.displayName).tag(theme)
                 }
             }
+            Divider()
+        }
+    }
+
+    // MARK: Window
+
+    /// The tab shortcuts (⌘1…⌘9, ⌘⇧] / ⌘⇧[, ⌃Tab) are `AppDelegate`'s.
+    @CommandsBuilder private var windowCommands: some Commands {
+        CommandGroup(before: .windowArrangement) {
+            Button("Show Previous Tab") { workspace.selectTab(offset: -1) }
+                .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Show Next Tab") { workspace.selectTab(offset: 1) }
+                .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Move Tab to New Window") {
+                if let front { workspace.moveToNewWindow(front) }
+            }
+            .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Merge All Windows") { workspace.mergeAllWindows() }
             Divider()
         }
     }
