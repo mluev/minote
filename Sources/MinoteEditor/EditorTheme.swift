@@ -434,6 +434,8 @@ public enum PreferenceKey {
     public static let showCounter = "ShowWordCount"
     public static let counterMetric = "WordCountMetric"
     public static let showsSyntax = "ShowMarkdownSyntax"
+    /// The Mac sidebar's width, as the user dragged it.
+    public static let sidebarWidth = "SidebarWidth"
 }
 
 extension PlatformColor {

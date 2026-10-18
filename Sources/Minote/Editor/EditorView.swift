@@ -5,16 +5,14 @@ import SwiftUI
 
 /// SwiftUI host for the AppKit editor. Text never flows through SwiftUI state:
 /// the library drives which note is shown through the `NoteEditor` protocol.
-/// The editor belongs to its tab (`PageWindow`), which attaches it to the
+/// The editor belongs to its tab (`PageTab`), which attaches it to the
 /// library as soon as the tab exists and detaches it when the tab closes.
+/// Switching tabs puts another tab's scroll view here; it keeps its state.
 struct EditorView: NSViewRepresentable {
     let editor: EditorCoordinator
     let configuration: EditorConfiguration
-    /// Height of the toolbar area the editor scrolls under.
-    let topInset: CGFloat
-    /// Full height of the editor, including the toolbar area.
+    /// Height of the page below the tab bar.
     let viewportHeight: CGFloat
-    let onUserEdit: () -> Void
 
     func makeCoordinator() -> EditorCoordinator {
         editor
@@ -22,17 +20,15 @@ struct EditorView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let coordinator = context.coordinator
-        coordinator.textView.onUserEdit = onUserEdit
         coordinator.apply(configuration)
-        coordinator.updateLayout(topInset: topInset, viewportHeight: viewportHeight)
+        coordinator.updateLayout(viewportHeight: viewportHeight)
         return coordinator.scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
-        coordinator.textView.onUserEdit = onUserEdit
         coordinator.apply(configuration)
-        coordinator.updateLayout(topInset: topInset, viewportHeight: viewportHeight)
+        coordinator.updateLayout(viewportHeight: viewportHeight)
     }
 }
 
@@ -41,7 +37,7 @@ struct EditorView: NSViewRepresentable {
 /// and the word counter. Styling and Focus mode live in the shared engine.
 final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     weak var library: Library?
-    weak var windowState: WindowState?
+    weak var tab: PageTab?
     let textView: WriterTextView
     let scrollView: EditorScrollView
     private let engine: EditorTextEngine
@@ -62,7 +58,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     /// What the counter shows: the text revision and the selection it counted
     /// (empty for the whole note).
     private var counted: (revision: Int, selection: NSRange)?
-    private var layoutInputs: (topInset: CGFloat, viewportHeight: CGFloat) = (0, 0)
+    private var layoutViewportHeight: CGFloat = 0
 
     private let linkHint = LinkHintView()
     /// The link the hint describes: moving along it changes nothing.
@@ -96,7 +92,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textView.interaction = self
         engine.isComposing = { [weak textView] in textView?.hasMarkedText() ?? false }
         textView.onFocusChange = { [weak self] focused in
-            self?.windowState?.isEditorFocused = focused
+            self?.tab?.isEditorFocused = focused
         }
 
         scrollView.hasVerticalScroller = true
@@ -114,7 +110,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
         outline.moveCaret = { [weak self] location in self?.moveHiddenCaret(to: location) }
         outline.isTypewriter = { [weak self] in self?.configuration.typewriter ?? false }
-        outline.bottomReserve = { [weak self] in self?.windowState?.showsCounter == true ? 40 : 12 }
+        outline.bottomReserve = { [weak self] in self?.tab?.showsCounter == true ? 40 : 12 }
         outline.hasNote = { [weak self] in self?.displayedNoteID != nil }
         outline.onPointerLeft = { [weak self] in self?.textView.restoreCursor() }
         outline.setPreviewing(configuration.preview)
@@ -141,31 +137,26 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             outline.styleDidChange(paper: engine.styleSheet.palette.paper)
         }
         if change.contains(.styleSheet) || change.contains(.typewriter) {
-            updateLayout(topInset: layoutInputs.topInset, viewportHeight: layoutInputs.viewportHeight, force: true)
+            updateLayout(viewportHeight: layoutViewportHeight, force: true)
             centerCaretIfNeeded()
         }
     }
 
-    /// Keeps the text clear of the toolbar and lets the user scroll past the
-    /// end. In Typewriter mode, the first and last lines can reach the middle.
-    func updateLayout(topInset: CGFloat, viewportHeight: CGFloat, force: Bool = false) {
-        guard force || layoutInputs != (topInset, viewportHeight) else { return }
-        layoutInputs = (topInset, viewportHeight)
-        let visible = max(0, viewportHeight - topInset)
+    /// Lets the user scroll past the end. In Typewriter mode, the first and
+    /// last lines can reach the middle.
+    func updateLayout(viewportHeight: CGFloat, force: Bool = false) {
+        guard force || layoutViewportHeight != viewportHeight else { return }
+        layoutViewportHeight = viewportHeight
         let lineHeight = textView.styleSheet.lineHeight
         let overscroll: CGFloat
         if configuration.typewriter {
-            overscroll = (visible / 2).rounded()
-            textView.topPadding = max(40, (visible / 2 - lineHeight / 2).rounded())
+            overscroll = (viewportHeight / 2).rounded()
+            textView.topPadding = max(40, (viewportHeight / 2 - lineHeight / 2).rounded())
         } else {
-            overscroll = (visible * 0.4).rounded()
+            overscroll = (viewportHeight * 0.4).rounded()
             textView.topPadding = min(140, max(40, (viewportHeight * 0.12).rounded()))
         }
         textView.bottomPadding = overscroll
-        let current = scrollView.contentInsets
-        if current.top != topInset || current.bottom != 0 {
-            scrollView.contentInsets = NSEdgeInsets(top: topInset, left: 0, bottom: 0, right: 0)
-        }
     }
 
     // MARK: NoteEditor
@@ -177,9 +168,9 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             viewStates[current] = (textView.selectedRange(), scrollView.contentView.bounds.origin)
         }
         pruneState()
-        if displayedNoteID != note?.id || windowState?.noteID != note?.id {
-            windowState?.noteID = note?.id
-            windowState?.isEdited = false
+        if displayedNoteID != note?.id || tab?.noteID != note?.id {
+            tab?.noteID = note?.id
+            tab?.isEdited = false
         }
         displayedNoteID = note?.id
         if let id = note?.id { rememberShown(id) }
@@ -218,7 +209,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     /// Called for a new note: start typing (leaving Preview).
     func focus() {
         if configuration.preview, let id = displayedNoteID, library?.note(with: id)?.isDraft == true {
-            windowState?.isPreviewing = false
+            tab?.isPreviewing = false
         }
         textView.focus()
     }
@@ -267,7 +258,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         guard !isReplacingText, let id = displayedNoteID else { return }
         textRevision += 1
         // Once per note, not per keystroke: typing never goes through SwiftUI.
-        if windowState?.isEdited == false { windowState?.isEdited = true }
+        if tab?.isEdited == false { tab?.isEdited = true }
         library?.editorDidChange(noteID: id, prefix: engine.titlePrefix())
         afterTextChange()
         if configuration.preview { outline.textDidChange() }
@@ -325,7 +316,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     /// note. Moving the caret over unchanged text counts nothing again, and
     /// the counting itself happens off the main thread.
     private func scheduleStatistics() {
-        guard windowState?.showsCounter == true else { return }
+        guard tab?.showsCounter == true else { return }
         let target = Self.countedSelection(textView.selectedRange())
         if let counted, counted.revision == textRevision, counted.selection == target { return }
         statisticsTask?.cancel()
@@ -337,8 +328,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             let text = selection.length > 0 ? storage.mutableString.substring(with: selection) : self.textView.string
             let statistics = await Task.detached(priority: .utility) { TextStatistics(text) }.value
             guard !Task.isCancelled else { return }
-            self.windowState?.statistics = statistics
-            self.windowState?.statisticsAreForSelection = selection.length > 0
+            self.tab?.statistics = statistics
+            self.tab?.statisticsAreForSelection = selection.length > 0
             self.counted = (revision, selection)
         }
     }

@@ -3,25 +3,26 @@ import MinoteEditor
 import MinoteKit
 import SwiftUI
 
-/// Every tab and where opened notes and files go. A note or file opens in the
-/// window in front: it takes the place of a library tab nobody typed in, and
-/// otherwise gets a new tab beside the one in front (see `OpenPlacement`).
-/// Opening stays light: a file from Finder with no window open gets a window
-/// of its own, and the library is read only once a window shows it.
+/// Every window and tab, and where opened notes and files go. A note or file
+/// opens in the window in front: it takes the place of a library tab nobody
+/// typed in, and otherwise gets a new tab beside the one in front (see
+/// `OpenPlacement`). Opening stays light: a file from Finder with no window
+/// open gets a window of its own, and the library is read only once a window
+/// shows it.
 @Observable
 final class Workspace {
     let library: Library
     let storage: LibraryStorageSwitcher
 
-    /// The tab in front (its window is main): the menus act on it.
-    private(set) var frontPage: PageWindow?
-    /// The library tab that shows the library's alerts: the latest in front.
-    private(set) var alertPage: PageWindow?
+    /// The window in front (main): the menus act on its front tab.
+    private(set) var frontWindow: PageWindow?
+    /// The library window that shows the library's alerts: the latest in front.
+    private(set) var alertWindow: PageWindow?
     /// File ▸ Open Recent, newest first. The system keeps the app's access to
     /// these files across launches.
     private(set) var recents: [URL] = []
 
-    @ObservationIgnored private var pages: [PageWindow] = []
+    @ObservationIgnored private var windows: [PageWindow] = []
     /// Files whose tab closed while their last save was still on its way.
     @ObservationIgnored private var closingFiles: [OpenedFile] = []
     @ObservationIgnored private var accessedRecents: Set<URL> = []
@@ -29,9 +30,6 @@ final class Workspace {
     /// The tabs of the last session are put back once, when the library first loads.
     @ObservationIgnored private var restoresTabs = true
     @ObservationIgnored private var tabsSave: Task<Void, Never>?
-    /// The tab group of the window in front, watched for tabs dragged into another order.
-    @ObservationIgnored private weak var watchedGroup: NSWindowTabGroup?
-    @ObservationIgnored private var groupObservation: NSKeyValueObservation?
 
     init() {
         var directory = LibraryLocation.defaultDirectory()
@@ -56,7 +54,10 @@ final class Workspace {
         library.shownNoteRemovedHandler = { [weak self] editor in self?.closeTab(showing: editor) ?? false }
     }
 
-    var hasWindows: Bool { !pages.isEmpty }
+    var hasWindows: Bool { !windows.isEmpty }
+
+    /// The tab the menus act on: the front window's.
+    var frontTab: PageTab? { frontWindow?.selectedTab }
 
     // MARK: The library
 
@@ -72,19 +73,27 @@ final class Workspace {
         return task
     }
 
-    /// Brings a library window forward, or opens one (at launch, from the
-    /// Dock, Launchpad or Spotlight, or for a library command).
+    /// Brings a library tab forward, or opens a window with one (at launch,
+    /// from the Dock, Launchpad or Spotlight, or for a library command).
     func showLibrary() {
-        if let page = frontmost(where: \.isLibraryPage) {
-            page.bringForward()
-            return
+        for window in orderedWindows {
+            if let tab = window.selectedTab, tab.isLibraryTab {
+                window.bringForward(tab)
+                return
+            }
+            if let tab = window.tabs.first(where: \.isLibraryTab) {
+                window.bringForward(tab)
+                return
+            }
         }
-        let page = makePage(.library, sidebar: .all, restoring: true)
-        library.attach(page.editor)
-        if library.isLoaded, page.windowState.noteID == nil, let id = freeNote() {
-            library.show(id, in: page.editor)
+        let window = makeWindow(sidebar: true)
+        let tab = makeTab(.library, restoring: true)
+        library.attach(tab.editor)
+        window.insert(tab)
+        if library.isLoaded, tab.noteID == nil, let id = freeNote() {
+            library.show(id, in: tab.editor)
         }
-        page.showAsNewWindow()
+        window.showAsNewWindow()
         loadLibrary()
         restoreTabs()
     }
@@ -95,49 +104,48 @@ final class Workspace {
     /// puts it where `OpenPlacement` says. `newTab` asks for a tab of its own.
     func open(note id: Note.ID, newTab: Bool = false, focus: Bool = true) {
         guard library.note(with: id) != nil else { return }
-        if let editor = library.editor(showing: id), let page = page(for: editor) {
-            page.bringForward()
-            if focus { page.editor.focus() }
+        if let tab = tab(showing: id), let window = tab.window {
+            window.bringForward(tab, focus: focus)
             return
         }
-        let front = targetPage
-        let page: PageWindow
-        switch OpenPlacement.of(isOpen: false, front: front?.frontTab, forceNewTab: newTab) {
+        let front = targetWindow?.selectedTab
+        switch OpenPlacement.of(isOpen: false, front: front?.placement, forceNewTab: newTab) {
         case .replaceFront:
-            guard let front else { return }
-            page = front
-            library.show(id, in: page.editor)
-            page.bringForward()
+            guard let front, let window = front.window else { return }
+            library.show(id, in: front.editor)
+            window.bringForward(front, focus: focus)
         case .newTab:
-            guard let front else { return }
-            page = makePage(.library, sidebar: front.windowState.columnVisibility)
-            library.show(id, in: page.editor)
-            front.window.addTabbedWindow(page.window, ordered: .above)
-            page.bringForward()
+            guard let window = front?.window else { return }
+            let tab = makeTab(.library)
+            library.show(id, in: tab.editor)
+            window.insert(tab, focus: focus)
+            window.window.makeKeyAndOrderFront(nil)
         case .newWindow, .focusExisting:
-            page = makePage(.library, sidebar: .all)
-            library.show(id, in: page.editor)
-            page.showAsNewWindow()
+            let window = makeWindow(sidebar: true)
+            let tab = makeTab(.library)
+            library.show(id, in: tab.editor)
+            window.insert(tab, focus: focus)
+            window.showAsNewWindow()
         }
-        if focus { page.editor.focus() }
         tabsDidChange()
     }
 
-    /// File ▸ New Tab and the tab bar's "+": an empty note in a tab of its own.
-    func newTab() {
+    /// File ▸ New Tab and the tab bar's "+": an empty note in a tab of its
+    /// own, in the given window or the one in front.
+    func newTab(in window: PageWindow? = nil) {
         Task { @MainActor in
             await loadLibrary().value
             guard let id = library.makeDraft() else { return }
-            let front = targetPage
-            let page = makePage(.library, sidebar: front?.windowState.columnVisibility ?? .all)
-            library.show(id, in: page.editor)
-            if let front {
-                front.window.addTabbedWindow(page.window, ordered: .above)
-                page.bringForward()
+            let tab = makeTab(.library)
+            library.show(id, in: tab.editor)
+            if let window = window ?? targetWindow {
+                window.insert(tab)
+                window.window.makeKeyAndOrderFront(nil)
             } else {
-                page.showAsNewWindow()
+                let window = makeWindow(sidebar: true)
+                window.insert(tab)
+                window.showAsNewWindow()
             }
-            page.editor.focus()
             tabsDidChange()
         }
     }
@@ -146,10 +154,9 @@ final class Workspace {
     func newNote() {
         Task { @MainActor in
             await loadLibrary().value
-            if let page = targetPage, page.isLibraryPage, let id = page.windowState.noteID,
-               library.note(with: id)?.isDraft == true, page.editor.currentText().isBlank {
-                page.bringForward()
-                page.editor.focus()
+            if let tab = targetWindow?.selectedTab, tab.isLibraryTab, tab.note?.isDraft == true,
+               tab.editor.currentText().isBlank, let window = tab.window {
+                window.bringForward(tab)
                 return
             }
             guard let id = library.makeDraft() else { return }
@@ -176,28 +183,28 @@ final class Workspace {
             open(note: note.id)
             return
         }
-        if let page = pages.first(where: { $0.file?.url == url }) {
-            page.bringForward()
+        if let tab = allTabs.first(where: { $0.file?.url == url }), let window = tab.window {
+            window.bringForward(tab)
             return
         }
-        let front = targetPage
+        let front = targetWindow?.selectedTab
         let file = OpenedFile(url: url)
-        let page = makePage(.file(file), sidebar: front?.windowState.columnVisibility ?? .detailOnly)
-        file.library.attach(page.editor)
-        switch OpenPlacement.of(isOpen: false, front: front?.frontTab) {
+        let tab = makeTab(.file(file))
+        file.library.attach(tab.editor)
+        switch OpenPlacement.of(isOpen: false, front: front?.placement) {
         case .replaceFront:
-            guard let front else { return }
-            front.window.addTabbedWindow(page.window, ordered: .below)
-            page.bringForward()
-            front.window.close()
+            guard let front, let window = front.window else { return }
+            window.replace(front, with: tab)
+            window.window.makeKeyAndOrderFront(nil)
         case .newTab:
-            guard let front else { return }
-            front.window.addTabbedWindow(page.window, ordered: .above)
-            page.bringForward()
+            guard let window = front?.window else { return }
+            window.insert(tab)
+            window.window.makeKeyAndOrderFront(nil)
         case .newWindow, .focusExisting:
-            page.showAsNewWindow()
+            let window = makeWindow(sidebar: false)
+            window.insert(tab)
+            window.showAsNewWindow()
         }
-        page.editor.focus()
         tabsDidChange()
         Task { await file.library.load() }
     }
@@ -242,62 +249,115 @@ final class Workspace {
 
     // MARK: Tabs
 
-    /// Window ▸ the tab at `index` of the front window; nil for the last one.
+    /// ⌘1…⌘9: the tab at `index` of the front window; nil for the last one.
     func selectTab(at index: Int?) {
-        guard let window = targetPage?.window, let tabs = window.tabbedWindows, !tabs.isEmpty else { return }
-        let tab = index.map { min($0, tabs.count - 1) } ?? tabs.count - 1
-        page(for: tabs[tab])?.bringForward()
+        guard let window = targetWindow, !window.tabs.isEmpty else { return }
+        let tabs = window.tabs
+        window.select(tabs[index.map { min($0, tabs.count - 1) } ?? tabs.count - 1])
     }
 
-    /// Showing or hiding the sidebar does it for every tab of the window, so
-    /// switching tabs doesn't move the page. Showing it loads the library.
-    func sidebarVisibilityChanged(in page: PageWindow) {
-        let visibility = page.windowState.columnVisibility
-        if visibility != .detailOnly { loadLibrary() }
-        for window in page.window.tabbedWindows ?? [] {
-            guard let other = self.page(for: window), other !== page,
-                  other.windowState.columnVisibility != visibility else { continue }
-            other.windowState.columnVisibility = visibility
-        }
+    /// ⌃Tab, ⌘⇧], and back.
+    func selectTab(offset: Int) {
+        targetWindow?.selectTab(offset: offset)
     }
 
-    /// A note the tab showed was removed: the tab closes if its window has
-    /// others; a window's last tab shows another note instead.
-    private func closeTab(showing editor: any NoteEditor) -> Bool {
-        guard let page = page(for: editor), (page.window.tabbedWindows?.count ?? 1) > 1 else { return false }
-        page.window.close()
+    /// File ▸ Close Tab.
+    func closeFrontTab() {
+        guard let window = targetWindow, let tab = window.selectedTab else { return }
+        window.close(tab)
+    }
+
+    /// A middle click: closes the tab under the pointer, if there is one.
+    func closeHoveredTab(in nsWindow: NSWindow) -> Bool {
+        guard let window = windows.first(where: { $0.window === nsWindow }), let hovered = window.state.hoveredTab,
+              let tab = window.tabs.first(where: { $0.id == hovered }) else { return false }
+        window.close(tab)
         return true
     }
 
-    // MARK: Pages
-
-    func pageBecameMain(_ page: PageWindow) {
-        frontPage = page
-        page.library.activate(page.editor)
-        if page.isLibraryPage { alertPage = page }
-        watchTabOrder(of: page.window)
-        tabsDidChange()
-        // In case the watcher missed something (e.g. while the Mac slept).
-        if let file = page.file, file.library.isLoaded { file.library.scheduleRescan() }
+    /// Moves a tab into another window's bar, at `index` (the end if nil).
+    func move(_ tab: PageTab, to target: PageWindow, at index: Int? = nil) {
+        guard let source = tab.window else { return }
+        if source === target {
+            source.move(tab, to: index ?? source.tabs.count - 1)
+            return
+        }
+        source.remove(tab)
+        target.insert(tab, at: index ?? target.tabs.count)
+        target.window.makeKeyAndOrderFront(nil)
     }
 
-    func pageResignedMain(_ page: PageWindow) {
-        if frontPage === page { frontPage = nil }
+    /// Window ▸ Move Tab to New Window, or a tab dragged out of its bar: a
+    /// window of its own, its top left corner at `topLeft` if given. A
+    /// window's only tab moves the window instead.
+    func moveToNewWindow(_ tab: PageTab, topLeft: NSPoint? = nil) {
+        guard let source = tab.window else { return }
+        let frame = source.window.frame
+        if source.tabs.count == 1 {
+            if let topLeft { source.window.setFrameTopLeftPoint(topLeft) }
+            return
+        }
+        source.remove(tab)
+        let window = makeWindow(sidebar: source.state.isSidebarVisible)
+        window.insert(tab)
+        let origin = topLeft.map { NSPoint(x: $0.x, y: $0.y - frame.height) } ?? NSPoint(x: frame.minX + 28, y: frame.minY - 28)
+        window.showAsNewWindow(frame: NSRect(origin: origin, size: frame.size))
     }
 
-    /// The tab closed: its note is wrapped up and saved; a file stops being watched.
-    func pageWillClose(_ page: PageWindow) {
-        defer { tabsDidChange() }
-        pages.removeAll { $0 === page }
-        if frontPage === page { frontPage = nil }
-        if alertPage === page { alertPage = frontmost(where: \.isLibraryPage) }
-        switch page.content {
+    /// Window ▸ Merge All Windows: every tab in the front window, in order.
+    func mergeAllWindows() {
+        guard let target = targetWindow else { return }
+        let selected = target.selectedTab
+        for window in orderedWindows where window !== target {
+            for tab in window.tabs {
+                move(tab, to: target)
+            }
+        }
+        if let selected { target.bringForward(selected) }
+    }
+
+    /// A tab pulled out of its bar and let go at a point on screen: into the
+    /// bar under it, or into a window of its own there.
+    func drop(_ tab: PageTab, at point: NSPoint) {
+        if let target = dropTarget(at: point) {
+            move(tab, to: target.window, at: target.index)
+        } else {
+            moveToNewWindow(tab, topLeft: NSPoint(x: point.x - 80, y: point.y + TitlebarLayout.height / 2))
+        }
+    }
+
+    /// The window whose tab bar is under a point on screen (a tab being
+    /// dropped there), with where the tab goes in it.
+    func dropTarget(at point: NSPoint) -> (window: PageWindow, index: Int)? {
+        for window in orderedWindows where window.window.isVisible {
+            let frame = window.window.frame
+            guard frame.contains(point) else { continue }
+            // The front-most window under the point decides.
+            guard point.y >= frame.maxY - TitlebarLayout.height, let strip = window.state.strip else { return nil }
+            let x = point.x - frame.minX - strip.frame.minX + strip.scrollOffset
+            let index = Int((x / max(strip.tabWidth, 1)).rounded())
+            return (window, min(max(index, 0), window.tabs.count))
+        }
+        return nil
+    }
+
+    /// A note a tab showed was removed: the tab closes if its window has
+    /// others; a window's last tab shows another note instead.
+    private func closeTab(showing editor: any NoteEditor) -> Bool {
+        guard let tab = allTabs.first(where: { $0.editor === editor }), let window = tab.window, window.tabs.count > 1 else { return false }
+        window.close(tab)
+        return true
+    }
+
+    /// The tab is closing: its note is wrapped up and saved; a file stops being watched.
+    func tabWillClose(_ tab: PageTab) {
+        switch tab.content {
         case .library:
-            library.detach(page.editor)
+            library.detach(tab.editor)
         case .file(let file):
             closingFiles.append(file)
             Task { @MainActor in
-                await file.finish(editor: page.editor)
+                await file.finish(editor: tab.editor)
                 // A save that failed keeps retrying; quitting asks about it.
                 if !file.library.hasUnsavedChanges {
                     closingFiles.removeAll { $0 === file }
@@ -306,36 +366,68 @@ final class Workspace {
         }
     }
 
+    // MARK: Windows
+
+    func windowBecameMain(_ window: PageWindow) {
+        frontWindow = window
+        if let tab = window.selectedTab {
+            tab.library.activate(tab.editor)
+            // In case the watcher missed something (e.g. while the Mac slept).
+            if let file = tab.file, file.library.isLoaded { file.library.scheduleRescan() }
+        }
+        if window.tabs.contains(where: \.isLibraryTab) { alertWindow = window }
+        tabsDidChange()
+    }
+
+    func windowResignedMain(_ window: PageWindow) {
+        if frontWindow === window { frontWindow = nil }
+    }
+
+    /// The window closed with every tab in it.
+    func windowWillClose(_ window: PageWindow) {
+        defer { tabsDidChange() }
+        for tab in window.tabs { tabWillClose(tab) }
+        window.state.tabs = []
+        window.state.selectedTab = nil
+        windows.removeAll { $0 === window }
+        if frontWindow === window { frontWindow = nil }
+        if alertWindow === window { alertWindow = orderedWindows.first { $0.tabs.contains(where: \.isLibraryTab) } }
+    }
+
     /// A new tab. Library tabs the user opens themselves take the place of
     /// the last session's, if those weren't put back yet (`restoring` is for
-    /// the window they're put back into).
-    private func makePage(_ content: PageWindow.Content, sidebar: NavigationSplitViewVisibility, restoring: Bool = false) -> PageWindow {
+    /// the tabs put back).
+    private func makeTab(_ content: PageTab.Content, restoring: Bool = false) -> PageTab {
         if case .library = content, library.isLoaded, !restoring { restoresTabs = false }
-        let page = PageWindow(content: content, workspace: self, sidebar: sidebar)
-        pages.append(page)
-        return page
-    }
-
-    private func page(for window: NSWindow) -> PageWindow? {
-        pages.first { $0.window === window }
-    }
-
-    private func page(for editor: any NoteEditor) -> PageWindow? {
-        pages.first { $0.editor === editor }
-    }
-
-    /// The selected tab of the front-most window: where opened things go.
-    var targetPage: PageWindow? {
-        frontmost { _ in true }
-    }
-
-    /// The front-most window's selected tab that matches.
-    private func frontmost(where matches: (PageWindow) -> Bool) -> PageWindow? {
-        for window in NSApp.orderedWindows where window.isVisible {
-            let selected = window.tabGroup?.selectedWindow ?? window
-            if let page = page(for: selected), matches(page) { return page }
+        switch content {
+        case .library: return PageTab(content: content, library: library)
+        case .file(let file): return PageTab(content: content, library: file.library)
         }
-        return pages.last(where: matches)
+    }
+
+    private func makeWindow(sidebar: Bool) -> PageWindow {
+        let window = PageWindow(workspace: self, sidebar: sidebar)
+        windows.append(window)
+        return window
+    }
+
+    private var allTabs: [PageTab] {
+        windows.flatMap(\.tabs)
+    }
+
+    private func tab(showing id: Note.ID) -> PageTab? {
+        allTabs.first { $0.isLibraryTab && $0.editor.displayedNoteID == id }
+    }
+
+    /// Minote's windows, front to back (on screen first).
+    private var orderedWindows: [PageWindow] {
+        let onScreen = NSApp.orderedWindows.compactMap { window in windows.first { $0.window === window } }
+        return onScreen + windows.filter { window in !onScreen.contains { $0 === window } }.reversed()
+    }
+
+    /// The window in front: where opened things go.
+    var targetWindow: PageWindow? {
+        orderedWindows.first { $0.window.isVisible } ?? orderedWindows.first
     }
 
     /// A note no tab shows, or a new draft.
@@ -348,17 +440,14 @@ final class Workspace {
     #if DEBUG
     /// Every window's tabs, front window first, for interaction tests.
     func describeTabs() -> String {
-        var groups = Set<ObjectIdentifier>()
         var lines: [String] = []
-        for window in NSApp.orderedWindows where page(for: window) != nil {
-            guard groups.insert(ObjectIdentifier(window.tabGroup ?? window)).inserted else { continue }
-            let selected = window.tabGroup?.selectedWindow ?? window
-            lines.append("window")
-            for tab in (window.tabbedWindows ?? [window]).compactMap({ page(for: $0) }) {
-                let kind = tab.isLibraryPage ? "note" : "file"
-                let marks = [tab.window === selected ? "selected" : nil, tab.windowState.isEdited ? "edited" : nil,
-                             tab.window.tab.attributedTitle != nil ? "italic" : nil].compactMap { $0 }
-                lines.append("  \(kind) \"\(tab.window.title)\" \(marks.joined(separator: " "))")
+        for window in orderedWindows {
+            lines.append("window \(window.window.frame) sidebar \(window.state.isSidebarVisible)")
+            for tab in window.tabs {
+                let kind = tab.isLibraryTab ? "note" : "file"
+                let marks = [tab === window.selectedTab ? "selected" : nil, tab.isEdited ? "edited" : nil,
+                             tab.isUntouched ? "italic" : nil].compactMap { $0 }
+                lines.append("  \(kind) \"\(tab.title)\" \(marks.joined(separator: " "))")
             }
         }
         lines.append("library loaded \(library.isLoaded), notes \(library.notes.count), selected \(library.selectedNote?.displayTitle ?? "-")")
@@ -374,20 +463,10 @@ final class Workspace {
     func tabsDidChange() {
         guard tabsSave == nil else { return }
         tabsSave = Task { @MainActor in
-            // After AppKit is done moving the windows.
+            // After AppKit is done ordering the windows.
             try? await Task.sleep(for: .milliseconds(100))
             tabsSave = nil
-            for page in pages { page.updateTitleVisibility() }
             saveTabs()
-        }
-    }
-
-    /// Dragging tabs into another order changes nothing else that's watched.
-    private func watchTabOrder(of window: NSWindow) {
-        guard let group = window.tabGroup, group !== watchedGroup else { return }
-        watchedGroup = group
-        groupObservation = group.observe(\.windows) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.tabsDidChange() }
         }
     }
 
@@ -396,66 +475,66 @@ final class Workspace {
         // A library never loaded this session (or not yet given back its
         // tabs) leaves the last session's tabs alone.
         guard library.isLoaded, !restoresTabs else { return }
-        var groups = Set<ObjectIdentifier>()
-        var windows: [SavedTabs.Window] = []
-        for window in NSApp.orderedWindows where page(for: window) != nil {
-            guard groups.insert(ObjectIdentifier(window.tabGroup ?? window)).inserted else { continue }
-            let tabs = (window.tabbedWindows ?? [window]).compactMap { page(for: $0) }
-            let names = tabs.map { page -> String? in
-                guard page.isLibraryPage, let id = page.windowState.noteID else { return nil }
-                return library.note(with: id)?.fileURL?.lastPathComponent
-            }
+        let saved = orderedWindows.compactMap { window -> SavedTabs.Window? in
+            let names = window.tabs.map(\.fileName)
             let kept = names.compactMap { $0 }
-            guard !kept.isEmpty else { continue }
-            let selected = window.tabGroup?.selectedWindow ?? window
-            let selectedIndex = tabs.firstIndex { $0.window === selected } ?? 0
-            let front = names.prefix(selectedIndex).compactMap { $0 }.count
-            windows.append(SavedTabs.Window(notes: kept, front: min(front, kept.count - 1)))
+            guard !kept.isEmpty else { return nil }
+            let selected = window.selectedTab.flatMap(window.index(of:)) ?? 0
+            let front = names.prefix(selected).compactMap { $0 }.count
+            let untouched = window.tabs.filter(\.isUntouched).compactMap(\.fileName)
+            return SavedTabs.Window(notes: kept, front: min(front, kept.count - 1), untouched: untouched.isEmpty ? nil : untouched)
         }
-        SavedTabs(windows: windows).save()
+        SavedTabs(windows: saved).save()
     }
 
     /// Puts back the last session's library tabs, starting in the first
     /// library window (opened at launch, or later after a file from Finder),
     /// if nothing happened to it meanwhile.
     private func restoreTabs() {
-        let libraryPages = pages.filter(\.isLibraryPage)
-        guard restoresTabs, library.isLoaded, !libraryPages.isEmpty else { return }
+        let libraryTabs = allTabs.filter(\.isLibraryTab)
+        guard restoresTabs, library.isLoaded, !libraryTabs.isEmpty else { return }
         restoresTabs = false
         let names = Set(library.notes.compactMap { $0.fileURL?.lastPathComponent })
-        guard libraryPages.count == 1, let first = libraryPages.first, !first.windowState.isEdited,
+        guard libraryTabs.count == 1, let first = libraryTabs.first, !first.isEdited, let firstWindow = first.window,
               let saved = SavedTabs.load()?.restored(existing: names), !saved.windows.isEmpty else { return }
 
         library.show(nil, in: first.editor)
         // Back to front, so the window that was in front ends up there.
-        for (index, window) in saved.windows.enumerated().reversed() {
-            var tabs: [PageWindow] = []
-            for name in window.notes {
-                guard let id = library.notes.first(where: { $0.fileURL?.lastPathComponent == name })?.id,
-                      library.editor(showing: id) == nil else { continue }
-                let page = index == 0 && tabs.isEmpty ? first : makePage(.library, sidebar: first.windowState.columnVisibility, restoring: true)
-                library.show(id, in: page.editor)
-                if let last = tabs.last {
-                    last.window.addTabbedWindow(page.window, ordered: .above)
-                } else if page !== first {
-                    page.window.setFrame(first.window.frame.offsetBy(dx: CGFloat(index) * 24, dy: CGFloat(-index) * 24), display: false)
-                    page.window.orderFront(nil)
+        for (index, savedWindow) in saved.windows.enumerated().reversed() {
+            let notes = savedWindow.notes.compactMap { name in
+                library.notes.first { $0.fileURL?.lastPathComponent == name }.map { (id: $0.id, name: name) }
+            }.filter { library.editor(showing: $0.id) == nil }
+            guard !notes.isEmpty else { continue }
+            let window = index == 0 ? firstWindow : makeWindow(sidebar: firstWindow.state.isSidebarVisible)
+            var restored: [PageTab] = []
+            for note in notes {
+                let tab = index == 0 && restored.isEmpty ? first : makeTab(.library, restoring: true)
+                library.show(note.id, in: tab.editor)
+                tab.isEdited = !savedWindow.isUntouched(note.name)
+                if tab !== first {
+                    let after = restored.last.flatMap(window.index(of:)).map { $0 + 1 }
+                    window.insert(tab, at: after, select: false, focus: false)
                 }
-                tabs.append(page)
+                restored.append(tab)
             }
-            let front = tabs.indices.contains(window.front) ? tabs[window.front] : tabs.last
-            front?.bringForward()
+            let front = restored.indices.contains(savedWindow.front) ? restored[savedWindow.front] : restored[restored.count - 1]
+            window.select(front, focus: index == 0)
+            if window !== firstWindow {
+                let offset = CGFloat(index) * 24
+                window.showAsNewWindow(frame: firstWindow.window.frame.offsetBy(dx: offset, dy: -offset))
+            }
         }
-        if first.windowState.noteID == nil, let id = freeNote() {
+        if first.noteID == nil, let id = freeNote() {
             library.show(id, in: first.editor)
         }
+        if let selected = firstWindow.selectedTab { firstWindow.bringForward(selected) }
         tabsDidChange()
     }
 
     // MARK: Saving
 
     private var fileLibraries: [Library] {
-        pages.compactMap(\.file?.library) + closingFiles.map(\.library)
+        allTabs.compactMap(\.file?.library) + closingFiles.map(\.library)
     }
 
     /// When Minote is left: every note and file on disk, the tabs remembered.

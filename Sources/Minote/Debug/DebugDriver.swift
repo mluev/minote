@@ -25,7 +25,7 @@ import SwiftUI
 ///   appearance dark|light     (not saved)
 ///   theme system|light|sepia|dark   (saved: put it back after)
 ///   panel true|false          the text settings popover
-///   toolbar                   every window's toolbar items and where they sit
+///   chrome                    the front window's buttons, tab bar and sidebar: where they sit
 ///   pref <key> true|false|remove
 ///   scroll <y>
 ///   outline                   the outline beside the page (Preview)
@@ -38,6 +38,15 @@ import SwiftUI
 ///   newtab | newnote          File ▸ New Tab / New Note
 ///   tab <i>                   select the front window's tab i (0-based)
 ///   closetab                  close the tab in front
+///   movetab <i> <j>           move the front window's tab i to place j
+///   tearoff                   move the tab in front to a window of its own
+///   merge                     Window ▸ Merge All Windows
+///   droptab <i> <x> <y>       let the front window's tab i go at a point from that window's top left
+///                             (may be outside it), as if pulled out of the bar
+///   sidebar true|false        show or hide the front window's sidebar
+///   mouse <x> <y> [down|up|drag|move|middle] [clicks]   a mouse event through the front window,
+///                             at a point from its top left (the tab bar, the sidebar's header)
+///   mousedrag <x1> <y1> <x2> <y2> [steps]   press, drag along a line, release (AppKit views only)
 ///   savetabs                  save the open tabs now and read them back
 ///   menus                     the File, View and Window menus with their shortcuts
 ///   trash <file name>         Move to Trash (driver notes only)
@@ -73,8 +82,9 @@ enum DebugDriver {
 
     private static func run(_ command: String, _ workspace: Workspace) async -> String {
         if let result = await runTabCommand(command, workspace) { return result }
-        guard let windowState = workspace.targetPage?.windowState, let editor = windowState.editor,
-              let window = editor.textView.window else { return "error: no editor" }
+        guard let windowState = workspace.targetWindow?.state, let tab = windowState.selectedTab,
+              let window = tab.editor.textView.window else { return "error: no editor" }
+        let editor = tab.editor
         let textView = editor.textView
         if !window.isKeyWindow {
             NSApp.activate(ignoringOtherApps: true)
@@ -120,7 +130,7 @@ enum DebugDriver {
         case "config":
             guard words.count == 2 else { return "error" }
             UserDefaults.standard.set(words[1] == "true", forKey: words[0] == "preview" ? "DebugPreview" : PreferenceKey.showsSyntax)
-            if words[0] == "preview" { windowState.isPreviewing = words[1] == "true" }
+            if words[0] == "preview" { tab.isPreviewing = words[1] == "true" }
         case "state":
             break
         case "pref":
@@ -143,13 +153,22 @@ enum DebugDriver {
             PageTheme.select(theme)
         case "panel":
             windowState.isShowingTextSettings = rest == "true"
-        case "toolbar":
-            return NSApp.windows.filter { $0.isVisible && $0.toolbar != nil }.map { window in
-                "window \"\(window.title)\" width \(window.frame.width) background \(window.backgroundColor.description)\n" + (window.toolbar?.items ?? []).map { item in
-                    let frame = item.view.map { $0.convert($0.bounds, to: nil) } ?? .zero
-                    return "  \(item.itemIdentifier.rawValue) \(item.label) \(frame)"
-                }.joined(separator: "\n")
-            }.joined(separator: "\n")
+        case "chrome":
+            let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap(window.standardWindowButton).map {
+                "\($0.convert($0.bounds, to: nil))"
+            }
+            let parents = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap(window.standardWindowButton).map { button in
+                sequence(first: button as NSView, next: \.superview).prefix(4).map { "\(type(of: $0)) \($0.frame)" }.joined(separator: " < ")
+            }.joined(separator: "\n  ")
+            let container = window.standardWindowButton(.closeButton)?.superview?.superview
+            return [
+                "window \(window.frame) content \(window.contentLayoutRect) title \"\(window.title)\"",
+                "buttons \(buttons.joined(separator: " ")) container \(container.map { "\($0.frame)" } ?? "-")",
+                "parents\n  \(parents)",
+                "buttonsWidth \(windowState.windowButtonsWidth.map { "\($0)" } ?? "full screen") sidebar \(windowState.isSidebarVisible)",
+                "strip \(windowState.strip.map { "\($0)" } ?? "-")",
+                "page \(editor.scrollView.convert(editor.scrollView.bounds, to: nil))",
+            ].joined(separator: "\n")
         case "snapshotwindow":
             guard words.count == 2, let other = NSApp.windows.first(where: { $0.isVisible && $0.title == words[0] }) else { return "error: no such window" }
             try? await Task.sleep(for: .milliseconds(150))
@@ -241,8 +260,79 @@ enum DebugDriver {
         case "tab":
             guard let index = Int(rest) else { return "error: bad index" }
             workspace.selectTab(at: index)
+        case "placebuttons":
+            guard let window = workspace.targetWindow?.window else { return "error" }
+            let before = window.standardWindowButton(.zoomButton)?.frame ?? .zero
+            let width = TitlebarLayout.placeWindowButtons(in: window)
+            let after = window.standardWindowButton(.zoomButton)?.frame ?? .zero
+            try? await Task.sleep(for: .milliseconds(300))
+            let later = window.standardWindowButton(.zoomButton)?.frame ?? .zero
+            return "zoom before \(before) after \(after) later \(later) width \(String(describing: width))"
+        case "mouse":
+            let words = rest.split(separator: " ").map(String.init)
+            guard words.count >= 2, let x = Double(words[0]), let y = Double(words[1]), let window = workspace.targetWindow?.window else { return "error" }
+            let kind = words.count > 2 ? words[2] : "click"
+            let clicks = words.count > 3 ? Int(words[3]) ?? 1 : 1
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            let point = NSPoint(x: x, y: y)
+            switch kind {
+            case "down": await send(.leftMouseDown, at: point, in: window, clicks: clicks)
+            case "up": await send(.leftMouseUp, at: point, in: window, clicks: clicks)
+            case "drag": await send(.leftMouseDragged, at: point, in: window)
+            case "move": await send(.mouseMoved, at: point, in: window)
+            case "middle":
+                await send(.otherMouseDown, at: point, in: window)
+                await send(.otherMouseUp, at: point, in: window)
+            default:
+                await send(.leftMouseDown, at: point, in: window, clicks: clicks)
+                try? await Task.sleep(for: .milliseconds(30))
+                await send(.leftMouseUp, at: point, in: window, clicks: clicks)
+            }
+        case "mousedrag":
+            let numbers = rest.split(separator: " ").compactMap { Double($0) }
+            guard numbers.count >= 4, let window = workspace.targetWindow?.window else { return "error" }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            let start = NSPoint(x: numbers[0], y: numbers[1]), end = NSPoint(x: numbers[2], y: numbers[3])
+            let steps = numbers.count > 4 ? Int(numbers[4]) : 12
+            await send(.leftMouseDown, at: start, in: window)
+            for step in 1...steps {
+                try? await Task.sleep(for: .milliseconds(16))
+                let t = Double(step) / Double(steps)
+                await send(.leftMouseDragged, at: NSPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t), in: window)
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+            await send(.leftMouseUp, at: end, in: window)
+        case "hit":
+            // hit <x> <y>: what a click there reaches, from the window's top left.
+            let numbers = rest.split(separator: " ").compactMap { Double($0) }
+            guard numbers.count == 2, let window = workspace.targetWindow?.window, let frame = window.contentView?.superview else { return "error" }
+            let point = NSPoint(x: numbers[0], y: window.frame.height - numbers[1])
+            var view = frame.hitTest(point)
+            var chain: [String] = []
+            while let current = view, chain.count < 6 {
+                chain.append(String(describing: type(of: current)))
+                view = current.superview
+            }
+            return chain.joined(separator: " < ")
         case "closetab":
-            workspace.targetPage?.window.performClose(nil)
+            workspace.closeFrontTab()
+        case "movetab":
+            let indices = rest.split(separator: " ").compactMap { Int($0) }
+            guard indices.count == 2, let window = workspace.targetWindow, window.tabs.indices.contains(indices[0]) else { return "error: bad index" }
+            window.move(window.tabs[indices[0]], to: indices[1])
+        case "tearoff":
+            guard let tab = workspace.targetWindow?.selectedTab else { return "error: no tab" }
+            workspace.moveToNewWindow(tab)
+        case "droptab":
+            let numbers = rest.split(separator: " ").compactMap { Double($0) }
+            guard numbers.count == 3, let window = workspace.targetWindow, window.tabs.indices.contains(Int(numbers[0])) else { return "error" }
+            workspace.drop(window.tabs[Int(numbers[0])], at: window.screenPoint(CGPoint(x: numbers[1], y: numbers[2])))
+        case "merge":
+            workspace.mergeAllWindows()
+        case "sidebar":
+            workspace.targetWindow?.state.isSidebarVisible = rest == "true"
         case "trash":
             guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == rest || $0.title == rest }) else {
                 return "error: no note \(rest)"
@@ -270,6 +360,60 @@ enum DebugDriver {
         }
         try? await Task.sleep(for: .milliseconds(400))
         return workspace.describeTabs()
+    }
+
+    /// The view a driven mouse press went to: the release follows it, as in AppKit.
+    private static var pressedView: NSView?
+
+    /// A mouse event at a point from the window's top left, straight to the
+    /// view under it (an inactive window would swallow a click to activate).
+    /// Mouse handling may run a nested event loop (tracking, moving the
+    /// window): never inside a Swift task, whose executor bookkeeping it
+    /// upsets. From the run loop, as AppKit delivers real events.
+    private static func send(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow, clicks: Int = 1) async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async {
+                deliver(type, at: point, in: window, clicks: clicks)
+                done.resume()
+            }
+        }
+    }
+
+    private static func deliver(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow, clicks: Int) {
+        let location = NSPoint(x: point.x, y: window.frame.height - point.y)
+        let pressed = type == .leftMouseDown || type == .leftMouseDragged || type == .otherMouseDown
+        guard var event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: type == .mouseMoved || type == .leftMouseDragged ? 0 : clicks,
+                                             pressure: pressed ? 1 : 0) else { return }
+        if type == .otherMouseDown || type == .otherMouseUp, let cg = event.cgEvent {
+            cg.setIntegerValueField(.mouseEventButtonNumber, value: 2)
+            if let middle = NSEvent(cgEvent: cg) { event = middle }
+        }
+        let hit = window.contentView?.superview?.hitTest(location)
+        lastHit = hit.map { String(describing: Swift.type(of: $0)) } ?? "nil"
+        switch type {
+        case .leftMouseDown:
+            // Straight to the view (an inactive window would swallow a click
+            // to activate). Clicks only: SwiftUI's drags follow the real
+            // mouse button, which a driven event doesn't press.
+            pressedView = hit
+            hit?.mouseDown(with: event)
+        case .leftMouseDragged:
+            pressedView?.mouseDragged(with: event)
+        case .leftMouseUp:
+            (pressedView ?? hit)?.mouseUp(with: event)
+            pressedView = nil
+        case .mouseMoved:
+            // What a tracking area tells the views under the pointer.
+            window.sendEvent(event)
+            hit?.mouseMoved(with: event)
+        case .otherMouseUp:
+            // Local monitors see events from the queue.
+            NSApp.postEvent(event, atStart: false)
+        default:
+            hit?.otherMouseDown(with: event)
+        }
     }
 
     private static func click(at point: NSPoint, modifiers: NSEvent.ModifierFlags, in textView: WriterTextView) {

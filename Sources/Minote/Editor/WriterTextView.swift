@@ -53,8 +53,6 @@ final class WriterTextView: NSTextView {
         didSet { if oldValue != bottomPadding { updateInsets() } }
     }
 
-    /// Called after every user edit.
-    var onUserEdit: (() -> Void)?
     /// Called when the editor gains or loses keyboard focus.
     var onFocusChange: ((Bool) -> Void)?
 
@@ -402,7 +400,6 @@ final class WriterTextView: NSTextView {
         }
         super.didChangeText()
         needsCaretUpdate()
-        onUserEdit?()
     }
 
     override func becomeFirstResponder() -> Bool {

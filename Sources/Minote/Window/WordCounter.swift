@@ -5,7 +5,7 @@ import MinoteEditor
 /// The word counter in the bottom corner. Click to switch between words,
 /// characters and reading time.
 struct WordCounter: View {
-    let windowState: WindowState
+    let tab: PageTab
     @AppStorage(PreferenceKey.counterMetric) private var metric = Metric.words
 
     enum Metric: String {
@@ -37,8 +37,8 @@ struct WordCounter: View {
     }
 
     private var label: String {
-        let statistics = windowState.statistics
-        let suffix = windowState.statisticsAreForSelection ? " selected" : ""
+        let statistics = tab.statistics
+        let suffix = tab.statisticsAreForSelection ? " selected" : ""
         switch metric {
         case .words:
             return "\(statistics.words.formatted()) \(statistics.words == 1 ? "word" : "words")\(suffix)"

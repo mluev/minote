@@ -1,7 +1,65 @@
 # Tabs (macOS)
 
-Status: approved behavior, technical design for implementation. Mac only; the
-iOS app keeps its single page.
+Status: built. Mac only; the iOS app keeps its single page. The behavior
+below stands; the native window tabs it was first built on were replaced by
+a tab bar of our own (next section). Sections further down describe the
+first approach where they say "native".
+
+## Revision: our own tab bar
+
+The system's tab bar didn't work for a writing app with its own paper: it
+sits under the titlebar as a translucent strip with small capsule tabs, can't
+take the page's colors (Sepia), and can't be given IDE-like behavior. Now:
+
+- One `PageWindow` per window holds its tabs (`WindowState.tabs`); a
+  `PageTab` is one tab with its own editor. Switching tabs swaps the page's
+  scroll view; a tab moved to another window takes its editor (caret,
+  scroll, undo) along. `Library` is unchanged: it already served one editor
+  per tab.
+- The tab bar is the top of the window, 40 pt, solid (the sidebar's paper).
+  The window buttons are centered in it. Each tab is a rounded plate inset
+  in the bar (6 pt above and below, 4 pt between tabs), with the sidebar
+  rows' radius and shades: the selection's on the tab in front, the hover's
+  under the pointer, a hairline between two plain tabs. The close button is
+  a 16 pt plate, as far from the tab's end as from its top. Tabs are as wide
+  as fit up to 224 pt; at 112 pt the bar scrolls, its edges fading
+  (`TabStripLayout`, tested). The plates are inset in the layout's slots,
+  so the widths, drag shifts and drop indices are unchanged.
+- A window with a single tab shows no tab: the bar takes the page's paper,
+  without its hairline, and keeps its height and buttons (toggle, "+",
+  "Aa"), so a second tab brings the tabs back without moving the page.
+  A lone tab can't be dragged out (there's nowhere to drag it from);
+  Window ▸ Merge All Windows still takes it into another window.
+- The sidebar is ours too, no `NavigationSplitView` and no window toolbar:
+  a header level with the bar (window buttons, the sidebar toggle, New
+  Note), a search field, the notes, a draggable edge. The toggle sits at
+  the same place whether the sidebar shows or not.
+- Dragging: along the bar (the others step aside), out of it into a window
+  of its own (a floating chip follows the pointer), or into another
+  window's bar. Window ▸ Move Tab to New Window and Merge All Windows; a
+  context menu (close others, close to the right, keep open, show in
+  Finder); middle-click closes; a double-click keeps an untouched tab.
+- Untouched tabs are saved as such, so a relaunch keeps the rule.
+- Dropped: fading the titlebar while typing (`ChromeFader`). The bar has its
+  own space now; fading it would leave an empty band.
+
+Found while building:
+
+- The bar lies in the titlebar's region, where AppKit moves the window from
+  a press on any view that doesn't refuse it, and SwiftUI's views don't:
+  presses on tabs moved the window. `PageNSWindow.sendEvent` turns moving
+  off for presses on the bar's controls; `WindowDragArea` moves it from the
+  empty parts (double-click zooms or minimizes, as set in System Settings).
+- AppKit re-lays out its titlebar on its own schedule, and a new title puts
+  the zoom button back at its place without a frame-change notification.
+  `WindowButtonsKeeper` re-centers after frame changes and window updates;
+  `updateTitle` lays out at once and re-centers before anything draws.
+- Reading `clickCount` from a non-click event raised inside a SwiftUI
+  gesture; the swallowed exception broke Swift's executor bookkeeping and
+  the app crashed later in unrelated places. The type is checked first.
+- Driven mouse events (debug driver) are delivered from the run loop, never
+  inside a Swift task; SwiftUI drags can't be driven at all (they follow the
+  real button), so dragging is checked by hand, drop logic by `droptab`.
 
 ## Behavior
 

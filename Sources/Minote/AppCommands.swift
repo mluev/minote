@@ -20,33 +20,33 @@ struct AppCommands: Commands {
     var body: some Commands {
         // No Settings window: every preference lives in the menus.
         CommandGroup(replacing: .appSettings) {}
-        SidebarCommands()
         TextEditingCommands()
         fileCommands
         editCommands
         CommandMenu("Format") {
-            FormatMenuItems(isEnabled: front?.windowState.isEditorFocused ?? false) { front?.windowState.editor?.perform($0) }
+            FormatMenuItems(isEnabled: front?.isEditorFocused ?? false) { front?.editor.perform($0) }
         }
         viewCommands
+        windowCommands
         CommandGroup(replacing: .help) {}
     }
 
-    /// The tab the menus act on: the one in front.
-    private var front: PageWindow? { workspace.frontPage }
+    /// The tab the menus act on: the front window's.
+    private var front: PageTab? { workspace.frontTab }
+
+    /// The window in front.
+    private var frontWindow: WindowState? { workspace.frontWindow?.state }
 
     /// The note of the tab in front, if it's one of the library's: library
     /// commands (Duplicate, Rename, Move to Trash) act on it, not on files
     /// opened from elsewhere.
     private var frontLibraryNote: Note? {
-        guard let front, front.isLibraryPage, let id = front.windowState.noteID else { return nil }
-        return library.note(with: id)
+        guard let front, front.isLibraryTab else { return nil }
+        return front.note
     }
 
     /// The note of the tab in front, whichever library it's in.
-    private var frontNote: Note? {
-        guard let front, let id = front.windowState.noteID else { return nil }
-        return front.library.note(with: id)
-    }
+    private var frontNote: Note? { front?.note }
 
     // MARK: File
 
@@ -67,6 +67,14 @@ struct AppCommands: Commands {
                     .disabled(workspace.recents.isEmpty)
             }
         }
+        CommandGroup(replacing: .saveItem) {
+            Button("Close Tab") { workspace.closeFrontTab() }
+                .keyboardShortcut("w")
+                .disabled(front == nil)
+            Button("Close Window") { workspace.frontWindow?.window.performClose(nil) }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(workspace.frontWindow == nil)
+        }
         CommandGroup(after: .newItem) {
             Button("Duplicate") {
                 guard let id = frontLibraryNote?.id else { return }
@@ -74,7 +82,7 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
             .disabled(frontLibraryNote?.isDraft ?? true)
-            Button("Rename…") { front?.windowState.renaming = frontLibraryNote }
+            Button("Rename…") { frontWindow?.renaming = frontLibraryNote }
                 .disabled(frontLibraryNote?.isBlankDraft ?? true)
             Divider()
             Button("Show in Finder") {
@@ -95,12 +103,12 @@ struct AppCommands: Commands {
                 library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!(front?.windowState.isSidebarFocused ?? false) || frontLibraryNote == nil)
+            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
                 let title = frontNote?.title ?? ""
-                front?.windowState.editor?.printNote(title: title.isEmpty ? "Note" : title)
+                front?.editor.printNote(title: title.isEmpty ? "Note" : title)
             }
             .keyboardShortcut("p")
             .disabled(frontNote == nil)
@@ -112,10 +120,10 @@ struct AppCommands: Commands {
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
             Button("Search All Notes") {
-                if front == nil { workspace.showLibrary() }
-                guard let page = workspace.frontPage else { return }
-                page.windowState.columnVisibility = .all
-                page.windowState.searchFocusRequest += 1
+                if workspace.frontWindow == nil { workspace.showLibrary() }
+                guard let window = workspace.frontWindow?.state ?? workspace.targetWindow?.state else { return }
+                window.isSidebarVisible = true
+                window.searchFocusRequest += 1
             }
             .keyboardShortcut("f", modifiers: [.command, .shift])
         }
@@ -124,9 +132,17 @@ struct AppCommands: Commands {
     // MARK: View
 
     @CommandsBuilder private var viewCommands: some Commands {
+        CommandGroup(replacing: .sidebar) {
+            Button(frontWindow?.isSidebarVisible == false ? "Show Sidebar" : "Hide Sidebar") {
+                guard let window = frontWindow else { return }
+                withAnimation(.smooth(duration: 0.22)) { window.isSidebarVisible.toggle() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .disabled(frontWindow == nil)
+        }
         CommandGroup(after: .sidebar) {
             Divider()
-            Toggle("Preview", isOn: Binding(get: { front?.windowState.isPreviewing ?? false }, set: { front?.windowState.isPreviewing = $0 }))
+            Toggle("Preview", isOn: Binding(get: { front?.isPreviewing ?? false }, set: { front?.isPreviewing = $0 }))
                 .keyboardShortcut("r")
                 .disabled(frontNote == nil)
             Divider()
@@ -166,6 +182,24 @@ struct AppCommands: Commands {
                     Text(theme.displayName).tag(theme)
                 }
             }
+            Divider()
+        }
+    }
+
+    // MARK: Window
+
+    /// The tab shortcuts (⌘1…⌘9, ⌘⇧] / ⌘⇧[, ⌃Tab) are `AppDelegate`'s.
+    @CommandsBuilder private var windowCommands: some Commands {
+        CommandGroup(before: .windowArrangement) {
+            Button("Show Previous Tab") { workspace.selectTab(offset: -1) }
+                .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Show Next Tab") { workspace.selectTab(offset: 1) }
+                .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Move Tab to New Window") {
+                if let front { workspace.moveToNewWindow(front) }
+            }
+            .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
+            Button("Merge All Windows") { workspace.mergeAllWindows() }
             Divider()
         }
     }

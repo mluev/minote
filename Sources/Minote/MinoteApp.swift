@@ -11,7 +11,7 @@ struct MinoteApp: App {
         AppDelegate.registerDefaults()
     }
 
-    /// Every window is AppKit's own (`PageWindow`, one per tab), made only
+    /// Every window is AppKit's own (`PageWindow`, with its tabs), made only
     /// when needed: opening a file from Finder must not pay for the library.
     /// SwiftUI contributes the menus; the empty Settings scene only hosts them.
     var body: some Scene {
@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a launch that only opens files never loads it.
     let workspace = Workspace()
     private var tabKeys: Any?
+    private var middleClicks: Any?
 
     /// Writing defaults: Markdown is typed literally, spelling is checked.
     /// Registered (not set), so Edit ▸ Substitutions toggles still win.
@@ -41,13 +42,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // The system's tab items: Window ▸ Merge All Windows, Move Tab to New
-        // Window, Show Next/Previous Tab (⌃Tab), View ▸ Show All Tabs.
-        NSWindow.allowsAutomaticWindowTabbing = true
+        // The tab bar is Minote's own: no system tabs (nor their menu items).
+        NSWindow.allowsAutomaticWindowTabbing = false
         PageTheme.applySaved()
         workspace.refreshRecents()
         tabKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { self?.handleTabKey(event) ?? false }
+            return handled ? nil : event
+        }
+        // A middle click on a tab closes it, as in browsers and editors.
+        middleClicks = NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [weak self] event in
+            let handled = MainActor.assumeIsolated { self?.handleMiddleClick(event) ?? false }
             return handled ? nil : event
         }
     }
@@ -87,13 +92,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workspace.selectTab(at: digit == 9 ? nil : digit - 1)
             return true
         }
-        guard (window.tabbedWindows?.count ?? 0) > 1 else { return false }
         switch (modifiers, event.keyCode) {
-        case ([.command, .shift], 30), (.control, 48): window.selectNextTab(nil)                // ] or Tab
-        case ([.command, .shift], 33), ([.control, .shift], 48): window.selectPreviousTab(nil)  // [ or Tab
+        case ([.command, .shift], 30), (.control, 48): workspace.selectTab(offset: 1)            // ] or Tab
+        case ([.command, .shift], 33), ([.control, .shift], 48): workspace.selectTab(offset: -1) // [ or Tab
         default: return false
         }
         return true
+    }
+
+    private func handleMiddleClick(_ event: NSEvent) -> Bool {
+        guard event.buttonNumber == 2, let window = event.window, window is PageNSWindow else { return false }
+        return workspace.closeHoveredTab(in: window)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

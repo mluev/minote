@@ -2,57 +2,44 @@ import MinoteEditor
 import MinoteKit
 import SwiftUI
 
-/// The page: the editor set up from the View menu, with the word counter and
-/// the text settings button. Every tab shows it beside the sidebar.
+/// The page of the tab in front: its editor set up from the View menu, with
+/// the word counter. The page sits below the tab bar, never under it.
 struct EditorPage: View {
-    let editor: EditorCoordinator
+    let tab: PageTab
     let windowState: WindowState
-    var onUserEdit: () -> Void = {}
 
     private var preferences = EditorPreferences()
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
 
-    init(editor: EditorCoordinator, windowState: WindowState, onUserEdit: @escaping () -> Void = {}) {
-        self.editor = editor
+    init(tab: PageTab, windowState: WindowState) {
+        self.tab = tab
         self.windowState = windowState
-        self.onUserEdit = onUserEdit
     }
 
     var body: some View {
         GeometryReader { proxy in
             EditorView(
-                editor: editor,
-                configuration: preferences.configuration(preview: windowState.isPreviewing, paper: theme.paper),
-                topInset: proxy.safeAreaInsets.top,
-                viewportHeight: proxy.size.height + proxy.safeAreaInsets.top,
-                onUserEdit: onUserEdit
+                editor: tab.editor,
+                configuration: preferences.configuration(preview: tab.isPreviewing, paper: theme.paper),
+                viewportHeight: proxy.size.height
             )
-            .ignoresSafeArea()
         }
         .background(Color(nsColor: theme.palette.background))
-        .background(WindowBackground(color: theme.palette.background))
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .toolbar {
-            // macOS 26 packs a column's items to its leading edge: push this one to the trailing edge.
-            if #available(macOS 26, *) {
-                ToolbarSpacer(.flexible)
-            }
-            ToolbarItem {
-                TextSettingsButton(windowState: windowState)
-            }
-        }
         .overlay(alignment: .bottomTrailing) {
             if showCounter {
-                WordCounter(windowState: windowState)
+                WordCounter(tab: tab)
                     .padding(8)
             }
         }
         .onChange(of: showCounter, initial: true) { _, shows in
-            windowState.showsCounter = shows
-            if shows { windowState.editor?.refreshStatistics() }
+            tab.showsCounter = shows
+            if shows { tab.editor.refreshStatistics() }
             // The outline keeps clear of the counter.
-            windowState.editor?.outline.setNeedsUpdate()
+            tab.editor.outline.setNeedsUpdate()
         }
+        // A file opened from elsewhere reports its own problems; the
+        // library's show in one window (`PageView`).
+        .libraryErrorAlert(tab.library, isEnabled: tab.file != nil)
     }
 }
