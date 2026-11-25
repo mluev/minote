@@ -141,6 +141,12 @@ struct MarkdownLexerTests {
         ("**strong**", ["syntax(**)", "strong(strong)", "syntax(**)"]),
         ("__strong__", ["syntax(__)", "strong(strong)", "syntax(__)"]),
         ("~~gone~~", ["syntax(~~)", "strikethrough(gone)", "syntax(~~)"]),
+        ("==marked==", ["syntax(==)", "highlight(marked)", "syntax(==)"]),
+        ("a ==b **c**== d", ["syntax(==)", "highlight(b **c**)", "syntax(**)", "strong(c)", "syntax(**)", "syntax(==)"]),
+        ("=one=", []),
+        ("===three===", []),
+        ("==unequal===", []),
+        ("x == y == z", []),
         ("snake_case_name", []),
         ("2 * 3 * 4", []),
         ("* not emphasis*", ["syntax(* )"]),
@@ -157,6 +163,8 @@ struct MarkdownLexerTests {
             String(repeating: "a* ", count: 20_000),
             String(repeating: "*a ", count: 20_000),
             String(repeating: "_x *y ", count: 10_000) + String(repeating: "z* ", count: 10_000),
+            String(repeating: "a== ", count: 20_000),
+            String(repeating: "==a ~~b ", count: 10_000) + String(repeating: "c== ", count: 10_000),
         ]
         let clock = ContinuousClock()
         let elapsed = clock.measure {

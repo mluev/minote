@@ -84,8 +84,10 @@ public struct EditorPalette: Sendable {
     /// Text outside the focused sentence or paragraph.
     public let faded: PlatformColor
     public let selection: PlatformColor
-    /// Behind inline code and code blocks in rendered view.
+    /// Behind inline code and code blocks in rendered view, and a table's header.
     public let codeBackground: PlatformColor
+    /// Behind `==highlighted==` text: a marker pen.
+    public let highlight: PlatformColor
     /// Block quotes in rendered view.
     public let quote: PlatformColor
     /// Underline under link text in rendered view.
@@ -138,6 +140,7 @@ public struct EditorPalette: Sendable {
         faded = color("Faded", light: 0xBEBEBE, dark: 0x4D4D4D, sepia: 0xC9BA9E, highContrastLight: 0x8C8C8C, highContrastDark: 0x7A7A7A, highContrastSepia: 0x958468)
         selection = color("Selection", light: 0xBFE8F8, dark: 0x0C3247, sepia: 0xE5D5AE)
         codeBackground = color("CodeBackground", light: 0xEBEBEB, dark: 0x262626, sepia: 0xECE2CB, highContrastLight: 0xDDDDDD, highContrastDark: 0x333333, highContrastSepia: 0xE2D5BA)
+        highlight = color("Highlight", light: 0xFBEB9B, dark: 0x5A4C14, sepia: 0xF0D88A, highContrastLight: 0xFFE066, highContrastDark: 0x6E5C10, highContrastSepia: 0xEACB5C)
         quote = color("Quote", light: 0x5C5C5C, dark: 0xA3A3A3, sepia: 0x6A5640, highContrastLight: 0x333333, highContrastDark: 0xCFCFCF, highContrastSepia: 0x3E2F20)
         linkUnderline = color("LinkUnderline", light: 0x8FD4EF, dark: 0x2C6E8C, sepia: 0x86BFD3)
         listMarker = color("ListMarker", light: 0x8A8A8A, dark: 0x858585, sepia: 0x958165, highContrastLight: 0x4D4D4D, highContrastDark: 0xBDBDBD, highContrastSepia: 0x5C4A33)

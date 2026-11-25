@@ -48,6 +48,7 @@ public final class MarkdownStyler {
         static let destination = Flags(rawValue: 1 << 7)
         /// Markup that disappears in rendered view.
         static let hidden = Flags(rawValue: 1 << 8)
+        static let highlight = Flags(rawValue: 1 << 9)
     }
 
     /// Tables longer than this are styled line by line, their columns not
@@ -370,6 +371,7 @@ public final class MarkdownStyler {
             case .url: flag = .url
             case .link: flag = .link
             case .destination: flag = .destination
+            case .highlight: flag = .highlight
             }
             for i in span.range where i < flags.count { flags[i].insert(flag) }
         }
@@ -491,7 +493,7 @@ public final class MarkdownStyler {
     /// Which inline markup shows around the caret: the formatted run it's in
     /// or touching (e.g. all of `**bold**`, or a whole link).
     private func revealedRange(around reveal: Range<Int>, flags: [Flags], from start: Int) -> Range<Int> {
-        let styled: Flags = [.syntax, .strong, .emphasis, .strikethrough, .code, .link, .destination, .url]
+        let styled: Flags = [.syntax, .strong, .emphasis, .strikethrough, .code, .link, .destination, .url, .highlight]
         func isStyled(_ i: Int) -> Bool {
             i >= start && i < flags.count && !flags[i].isDisjoint(with: styled)
         }
@@ -520,6 +522,9 @@ public final class MarkdownStyler {
         }
         if flags.contains(.strikethrough), !flags.contains(.syntax) {
             storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+        }
+        if flags.contains(.highlight), !flags.contains(.syntax) {
+            storage.addAttribute(.backgroundColor, value: styleSheet.palette.highlight, range: range)
         }
         if rendered, flags.contains(.code) {
             storage.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: range)

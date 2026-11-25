@@ -13,6 +13,8 @@ public enum MarkdownStyle: UInt8, Sendable {
     case url
     /// Where a `[text](…)` link or image points: markup, hidden in rendered view.
     case destination
+    /// `==marked==` text.
+    case highlight
 }
 
 /// A styled range inside one line, in UTF-16 offsets (the unit of NSString).
@@ -534,7 +536,7 @@ private struct LineLexer {
 
     private static let urlPrefixes: [[UInt16]] = ["https://", "http://", "www."].map { Array($0.utf16) }
 
-    // MARK: Emphasis (CommonMark "process emphasis", plus GFM strikethrough)
+    // MARK: Emphasis (CommonMark "process emphasis", plus GFM strikethrough and ==highlight==)
 
     private struct Delimiter {
         var position: Int
@@ -550,7 +552,7 @@ private struct LineLexer {
         var i = range.lowerBound
         while i < range.upperBound {
             let c = chars[i]
-            guard !protected[i], c == .asterisk || c == .underscore || c == .tilde else {
+            guard !protected[i], c == .asterisk || c == .underscore || c == .tilde || c == .equals else {
                 i += 1
                 continue
             }
@@ -571,7 +573,8 @@ private struct LineLexer {
                 canClose = rightFlanking
             }
             let length = end - i
-            if c != .tilde || length <= 2 {
+            // `~` and `~~` strike through; only `==` highlights.
+            if c == .tilde ? length <= 2 : c == .equals ? length == 2 : true {
                 delimiters.append(Delimiter(position: i, char: c, length: length, originalLength: length, canOpen: canOpen, canClose: canClose))
             }
             i = end
@@ -583,9 +586,9 @@ private struct LineLexer {
         // for an opener may stop because nothing below can match. Together they
         // keep long lines full of `*` and `_` (pasted data, minified code) linear.
         var previous = Array(-1..<(delimiters.count - 1))
-        var bottoms = [Int](repeating: -1, count: 18)
+        var bottoms = [Int](repeating: -1, count: 24)
         func bottomKey(_ closer: Delimiter) -> Int {
-            let kind = closer.char == .asterisk ? 0 : closer.char == .underscore ? 1 : 2
+            let kind = closer.char == .asterisk ? 0 : closer.char == .underscore ? 1 : closer.char == .tilde ? 2 : 3
             return kind * 6 + (closer.canOpen ? 3 : 0) + closer.originalLength % 3
         }
 
@@ -602,7 +605,7 @@ private struct LineLexer {
             while openerIndex > bottoms[key] {
                 let opener = delimiters[openerIndex]
                 if opener.char == closer.char, opener.canOpen, opener.length > 0 {
-                    if closer.char == .tilde {
+                    if closer.char == .tilde || closer.char == .equals {
                         if opener.length == closer.length {
                             match = openerIndex
                             break
@@ -633,9 +636,9 @@ private struct LineLexer {
             var current = closer
             let use: Int
             let style: MarkdownStyle
-            if current.char == .tilde {
+            if current.char == .tilde || current.char == .equals {
                 use = current.length
-                style = .strikethrough
+                style = current.char == .tilde ? .strikethrough : .highlight
             } else {
                 use = opener.length >= 2 && current.length >= 2 ? 2 : 1
                 style = use == 2 ? .strong : .emphasis
@@ -706,6 +709,7 @@ extension UInt16 {
     static let period: UInt16 = 0x2E
     static let colon: UInt16 = 0x3A
     static let lessThan: UInt16 = 0x3C
+    static let equals: UInt16 = 0x3D
     static let greaterThan: UInt16 = 0x3E
     static let at: UInt16 = 0x40
     static let uppercaseX: UInt16 = 0x58

@@ -37,6 +37,23 @@ struct MarkdownStylerTests {
         #expect(!isHidden(storage, at: 0))
     }
 
+    @Test func highlightedTextIsMarkedAndItsMarkupHidden() {
+        func background(_ storage: NSTextStorage, at index: Int) -> NSColor? {
+            storage.attribute(.backgroundColor, at: index, effectiveRange: nil) as? NSColor
+        }
+        let (storage, _) = styled("a ==mark== b")
+        #expect(isHidden(storage, at: 2) && isHidden(storage, at: 8))
+        #expect(background(storage, at: 4) == EditorPalette.standard.highlight)
+        #expect(background(storage, at: 2) == nil && background(storage, at: 11) == nil)
+        // Under the caret the markup shows, unmarked.
+        let (near, _) = styled("a ==mark== b", reveal: NSRange(location: 5, length: 0))
+        #expect(!isHidden(near, at: 2) && background(near, at: 2) == nil)
+        #expect(background(near, at: 5) == EditorPalette.standard.highlight)
+        let (source, _) = styled("a ==mark== b", showsSyntax: true)
+        #expect(color(source, at: 2) == EditorPalette.standard.syntax)
+        #expect(background(source, at: 4) == EditorPalette.standard.highlight)
+    }
+
     @Test func onlyTheFormattingUnderTheCaretShowsItsMarkup() {
         let text = "**one** plain _two_\n**three**"
         let (storage, _) = styled(text, reveal: NSRange(location: 3, length: 0))  // inside "one"
