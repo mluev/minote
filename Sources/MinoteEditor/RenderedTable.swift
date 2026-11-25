@@ -47,9 +47,9 @@ public final class RenderedTable: NSObject {
                 let text = NSMutableAttributedString(attributedString: column < row.count ? row[column] : NSAttributedString())
                 let all = NSRange(location: 0, length: text.length)
                 text.addAttribute(.paragraphStyle, value: styles[column], range: all)
-                // String drawing (TextKit 1) lowers text set in a fixed line
-                // height; a positive offset lifts it where TextKit 2 puts the
-                // page's (whose offset is negative): centered in the line.
+                // String drawing puts a fixed line height's extra room above
+                // the text and ignores a negative offset; the page's offset,
+                // turned positive, lifts the text to the middle of the line.
                 text.addAttribute(.baselineOffset, value: -sheet.baselineOffset, range: all)
                 return text
             }
