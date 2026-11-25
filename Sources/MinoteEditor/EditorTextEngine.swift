@@ -102,6 +102,17 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         styler.revealRange = nil
     }
 
+    /// The text column's real width, as the view lays it out (narrower than
+    /// the style sheet's in a narrow window): tables are fitted to it.
+    public func setColumnWidth(_ width: CGFloat) {
+        guard width > 0, abs(width - (styler.availableWidth ?? -1)) >= 0.5 else { return }
+        styler.availableWidth = width
+        guard let storage, storage.length > 0, !needsFullRestyle else { return }
+        storage.beginEditing()
+        styler.styleTables(storage, fences: fences)
+        storage.endEditing()
+    }
+
     /// Restyles the whole document (after a font or setting change).
     public func restyleAll(selection: NSRange) {
         guard let storage else { return }
@@ -117,15 +128,20 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
 
     /// A copy for printing or exporting: fully styled, without Focus fading,
     /// in standard ink (the sheet of paper is real; sepia is for the screen).
-    /// Tables are text: printing lays text out without our layout fragments.
-    public func printableCopy() -> NSAttributedString {
+    /// Tables are text (printing lays text out without our layout
+    /// fragments), lined up if they fit in `columnWidth`, the paper's column.
+    public func printableCopy(columnWidth: CGFloat? = nil) -> NSAttributedString {
         guard let storage else { return NSAttributedString() }
         let copy = NSTextStorage(attributedString: storage)
-        let focus = styler.focusRange, reveal = styler.revealRange, screenSheet = styler.styleSheet
+        let focus = styler.focusRange, reveal = styler.revealRange, screenSheet = styler.styleSheet, screenWidth = styler.availableWidth
         styler.focusRange = nil
         styler.revealRange = nil
         styler.drawsTables = false
-        defer { styler.drawsTables = true }
+        styler.availableWidth = columnWidth
+        defer {
+            styler.drawsTables = true
+            styler.availableWidth = screenWidth
+        }
         if screenSheet.palette.paper != .standard {
             styler.styleSheet = EditorStyleSheet(family: configuration.family, size: CGFloat(configuration.size), hangsMarkers: hangsMarkers)
         }

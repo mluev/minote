@@ -134,11 +134,25 @@ struct EditorTextEngineTests {
         #expect(isDrawn())
     }
 
+    @Test func aNarrowerColumnRefitsTheTables() {
+        let long = Array(repeating: "words", count: 30).joined(separator: " ")
+        let (engine, storage) = engine("text\n| Ask | What |\n|---|---|\n| Short | \(long) |\n\nafter")
+        func table() -> RenderedTable? { (storage.attribute(.minoteTable, at: 5, effectiveRange: nil) as? RenderedTable.Line)?.table }
+        let probe = NSAttributedString.Key("Probe")
+        storage.addAttribute(probe, value: true, range: NSRange(location: 0, length: 4))
+        guard let wide = table() else { Issue.record("no drawn table"); return }
+        engine.setColumnWidth(300)
+        guard let narrow = table() else { Issue.record("no drawn table"); return }
+        #expect(wide.width > 300 && narrow.width <= 300)
+        #expect(narrow.rows[1].height > wide.rows[1].height)
+        #expect(storage.attribute(probe, at: 0, effectiveRange: nil) != nil)   // only the tables were restyled
+    }
+
     /// Printing lays text out without our fragments: tables print as text.
     @Test func printingKeepsATablesText() {
         let (engine, storage) = engine("| Name | Role |\n|---|---|\n| Alice | Engineer |")
         #expect(storage.attribute(.minoteTable, at: 0, effectiveRange: nil) != nil)
-        let copy = engine.printableCopy()
+        let copy = engine.printableCopy(columnWidth: 400)
         #expect(copy.string.contains("Alice"))
         let alice = (copy.string as NSString).range(of: "Alice").location
         #expect(((copy.attribute(.font, at: alice, effectiveRange: nil) as? NSFont)?.pointSize ?? 0) > 1)

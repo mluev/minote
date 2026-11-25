@@ -159,13 +159,14 @@ public final class RenderedTable: NSObject {
 
     // MARK: Cell text
 
-    /// How cell text is laid out: the same way when it is measured and when
-    /// it is drawn, so it fills exactly the height it was measured to need.
-    private static let drawingOptions: NSString.DrawingOptions = [.usesLineFragmentOrigin]
+    // Cell text is laid out the same way (`.usesLineFragmentOrigin`, the
+    // column's width) when it is measured and when it is drawn, so it fills
+    // exactly the height it was measured to need. (The options' type is named
+    // differently in AppKit and UIKit.)
 
     static func textHeight(_ text: NSAttributedString, width: CGFloat) -> CGFloat {
         guard text.length > 0 else { return 0 }
-        return text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: drawingOptions, context: nil)
+        return text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin], context: nil)
             .height.rounded(.up)
     }
 
@@ -174,11 +175,11 @@ public final class RenderedTable: NSObject {
         #if os(macOS)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-        text.draw(with: rect, options: drawingOptions, context: nil)
+        text.draw(with: rect, options: [.usesLineFragmentOrigin], context: nil)
         NSGraphicsContext.restoreGraphicsState()
         #else
         UIGraphicsPushContext(context)
-        text.draw(with: rect, options: drawingOptions, context: nil)
+        text.draw(with: rect, options: [.usesLineFragmentOrigin], context: nil)
         UIGraphicsPopContext()
         #endif
     }

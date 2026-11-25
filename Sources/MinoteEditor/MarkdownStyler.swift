@@ -33,13 +33,10 @@ public final class MarkdownStyler {
     /// lays text out without our layout fragments.
     public var drawsTables = true
     /// The text column's real width (narrower than the style sheet's in a
-    /// narrow window): drawn tables are fitted to it, and a table being
-    /// edited lines up only if it fits.
-    public var availableWidth: CGFloat {
-        get { columnWidth ?? styleSheet.columnWidth }
-        set { columnWidth = newValue }
-    }
-    private var columnWidth: CGFloat?
+    /// narrow window); nil for the style sheet's. Drawn tables are fitted to
+    /// it, and a table being edited lines up only if it fits.
+    public var availableWidth: CGFloat?
+    private var tableRoom: CGFloat { availableWidth ?? styleSheet.columnWidth }
 
     private lazy var tagger = NLTagger(tagSchemes: [.lexicalClass])
 
@@ -119,6 +116,24 @@ public final class MarkdownStyler {
             }
         }
         finishTable()
+    }
+
+    /// Restyles every table, and nothing else: after `availableWidth` changed.
+    public func styleTables(_ storage: NSTextStorage, fences: FenceIndex) {
+        let string = storage.mutableString
+        var table: NSRange?
+        var location = 0
+        while location < string.length {
+            let line = string.lineRange(for: NSRange(location: location, length: 0))
+            if Self.isTableRow(at: line.location, in: string, fences: fences) {
+                table = table.map { NSUnionRange($0, line) } ?? line
+            } else if let rows = table {
+                style(storage, range: rows, fences: fences)
+                table = nil
+            }
+            location = NSMaxRange(line)
+        }
+        if let table { style(storage, range: table, fences: fences) }
     }
 
     /// Whether the caret or selection is on the line [start, end) (end
@@ -250,7 +265,7 @@ public final class MarkdownStyler {
             return .drawn(table)
         }
         let alignment = alignment(of: rows, in: storage)
-        return alignment.width <= availableWidth ? .aligned(alignment.padding) : .plain
+        return alignment.width <= tableRoom ? .aligned(alignment.padding) : .plain
     }
 
     /// The table drawn for rows whose second is a delimiter row.
@@ -261,7 +276,7 @@ public final class MarkdownStyler {
         guard let header = cells.first, !header.isEmpty else { return nil }
         return RenderedTable(header: header, body: Array(cells.dropFirst()),
                              alignments: MarkdownTable.alignments(delimiterRow: rows[1].line, in: rows[1].chars),
-                             availableWidth: availableWidth, styleSheet: styleSheet)
+                             availableWidth: tableRoom, styleSheet: styleSheet)
     }
 
     /// A cell's text as styled, without its surrounding spaces or the markup

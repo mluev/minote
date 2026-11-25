@@ -56,6 +56,11 @@ final class WriterTextView: NSTextView {
     /// Called when the editor gains or loses keyboard focus.
     var onFocusChange: ((Bool) -> Void)?
 
+    /// Called when the text column's width changes: in a window narrower
+    /// than the column, or with another font.
+    var onColumnWidthChange: ((CGFloat) -> Void)?
+    private var reportedColumnWidth: CGFloat?
+
     private var caretUpdateScheduled = false
     private var focusWhenInWindow = false
 
@@ -121,6 +126,11 @@ final class WriterTextView: NSTextView {
         if textContainerInset != inset {
             textContainerInset = inset
             needsCaretUpdate()
+        }
+        let column = min(styleSheet.columnWidth, bounds.width - 2 * max(columnLeft, styleSheet.gutter))
+        if let onColumnWidthChange, column > 0, column != reportedColumnWidth {
+            reportedColumnWidth = column
+            onColumnWidthChange(column)
         }
     }
 
