@@ -13,6 +13,8 @@ import SwiftUI
 final class Workspace {
     let library: Library
     let storage: LibraryStorageSwitcher
+    /// Unlocking (password, Touch ID) and locking again.
+    let lock: LockController
 
     /// The window in front (main): the menus act on its front tab.
     private(set) var frontWindow: PageWindow?
@@ -30,18 +32,28 @@ final class Workspace {
     /// The tabs of the last session are put back once, when the library first loads.
     @ObservationIgnored private var restoresTabs = true
     @ObservationIgnored private var tabsSave: Task<Void, Never>?
+    /// A sealed note the user just opened, and when: its new panel asks for
+    /// Touch ID once, right away (not a note put back at launch, nor one that
+    /// locked while open). Stale after a moment, so it never fires later.
+    @ObservationIgnored private var unlockPrompt: (id: Note.ID, at: ContinuousClock.Instant)?
+    /// Where the open tabs are kept: the driver's own suite under the debug
+    /// driver, so its tabs never replace the real app's.
+    @ObservationIgnored private let tabDefaults: UserDefaults
 
     init() {
         var directory = LibraryLocation.defaultDirectory()
+        var defaults = UserDefaults.standard
         #if DEBUG
-        // Interaction tests run against their own library.
+        // Interaction tests run against their own library, with their own
+        // lock settings (a test password must never reach the real library's).
         if ProcessInfo.processInfo.environment["MINOTE_DRIVER"] != nil {
             directory = directory.deletingLastPathComponent().appendingPathComponent("DriverNotes", isDirectory: true)
+            defaults = UserDefaults(suiteName: "com.mlutfullaev.minote.driver") ?? defaults
         }
         #endif
         let backups = LibraryLocation.backupDirectory()
         let store = NoteFileStore(directory: directory, backupDirectory: backups)
-        let library = Library(store: store, watcher: FSEventsWatcher(directory: store.directory))
+        let library = Library(store: store, watcher: FSEventsWatcher(directory: store.directory), defaults: defaults)
         self.library = library
         storage = LibraryStorageSwitcher(
             library: library,
@@ -50,6 +62,13 @@ final class Workspace {
             },
             makeWatcher: { FSEventsWatcher(directory: $0.standardizedFileURL.resolvingSymlinksInPath()) }
         )
+        var biometrics: any BiometricUnlocking = SecureEnclaveUnlock()
+        #if DEBUG
+        // Interaction tests have no finger to put on Touch ID.
+        if ProcessInfo.processInfo.environment["MINOTE_DRIVER"] != nil { biometrics = FakeBiometricUnlock() }
+        #endif
+        lock = LockController(library: library, biometrics: biometrics, defaults: defaults)
+        tabDefaults = defaults
         library.openHandler = { [weak self] id in self?.open(note: id) }
         library.shownNoteRemovedHandler = { [weak self] editor in self?.closeTab(showing: editor) ?? false }
     }
@@ -68,6 +87,7 @@ final class Workspace {
         let task = Task { @MainActor in
             await storage.open()
             restoreTabs()
+            promptUnlockIfNeeded()
         }
         loading = task
         return task
@@ -103,7 +123,15 @@ final class Workspace {
     /// Shows a library note: brings its tab forward if it has one, otherwise
     /// puts it where `OpenPlacement` says. `newTab` asks for a tab of its own.
     func open(note id: Note.ID, newTab: Bool = false, focus: Bool = true) {
-        guard library.note(with: id) != nil else { return }
+        guard let note = library.note(with: id) else { return }
+        // Opened on purpose: a locked note asks for Touch ID straight away.
+        if note.isSealed {
+            if tab(showing: id) != nil {
+                Task { await lock.unlockWithBiometrics() }
+            } else {
+                unlockPrompt = (id, .now)
+            }
+        }
         if let tab = tab(showing: id), let window = tab.window {
             window.bringForward(tab, focus: focus)
             return
@@ -150,17 +178,73 @@ final class Workspace {
         }
     }
 
-    /// File ▸ New Note: a new draft where notes open, or the empty one in front.
-    func newNote() {
+    /// File ▸ New Note: a new draft where notes open, or the empty one in
+    /// front. `locked`: File ▸ New Locked Note, sealed from its first save.
+    func newNote(locked: Bool = false) {
         Task { @MainActor in
             await loadLibrary().value
-            if let tab = targetWindow?.selectedTab, tab.isLibraryTab, tab.note?.isDraft == true,
+            if let tab = targetWindow?.selectedTab, tab.isLibraryTab, let note = tab.note, note.isDraft, !note.isSealed,
+               note.isLocked == (locked || library.lockScope == .library),
                tab.editor.currentText().isBlank, let window = tab.window {
                 window.bringForward(tab)
                 return
             }
-            guard let id = library.makeDraft() else { return }
+            guard let id = library.makeDraft(locked: locked) else { return }
             open(note: id)
+        }
+    }
+
+    // MARK: Locking
+
+    /// Minote came forward, finished opening, or the Mac was unlocked: if
+    /// what's in front is locked (the whole library, or the note in the front
+    /// tab), Touch ID asks at once.
+    func promptUnlockIfNeeded() {
+        guard NSApp.isActive, library.isLoaded, library.hasPassword, !library.isUnlocked else { return }
+        guard library.isLibraryLocked || frontTab?.note?.isSealed == true else { return }
+        Task { await lock.unlockAutomatically() }
+    }
+
+    /// Whether the panel just shown for this sealed note should ask for Touch ID.
+    func takeUnlockPrompt(for id: Note.ID) -> Bool {
+        defer { unlockPrompt = nil }
+        guard let prompt = unlockPrompt, prompt.id == id else { return false }
+        return ContinuousClock.now - prompt.at < .seconds(2)
+    }
+
+    /// File ▸ Lock Note: asks for a password first if there's none, and to
+    /// unlock if the library is locked.
+    func lockNote(_ id: Note.ID, in window: WindowState?) {
+        guard library.hasPassword else {
+            if library.canSetPassword {
+                window?.passwordRequest = PasswordRequest(kind: .set, thenLock: id)
+            } else {
+                library.presentedError = LibraryError(title: "Minote is still reading your library",
+                                                      message: "Try again in a moment.")
+            }
+            return
+        }
+        Task { @MainActor in
+            if !library.isUnlocked, !(await lock.unlockWithBiometrics(reason: "lock this note")) {
+                window?.passwordRequest = PasswordRequest(kind: .unlock, thenLock: id)
+                return
+            }
+            do {
+                try await library.lock(id)
+            } catch {
+                library.presentedError = LibraryError(title: "Couldn't lock the note", message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// File ▸ Remove Lock: the note is a plain file again.
+    func removeLock(_ id: Note.ID) {
+        Task { @MainActor in
+            do {
+                try await library.removeLock(id)
+            } catch {
+                library.presentedError = LibraryError(title: "Couldn't remove the lock", message: error.localizedDescription)
+            }
         }
     }
 
@@ -169,6 +253,10 @@ final class Workspace {
     /// Finder (double-click, Open With), files dropped on the Dock icon, recent files.
     func open(_ url: URL) {
         let url = url.standardizedFileURL.resolvingSymlinksInPath()
+        if NoteNaming.isLockedFile(url) {
+            openLockedNote(url)
+            return
+        }
         guard OpenedFile.canOpen(url) else {
             NSSound.beep()
             return
@@ -207,6 +295,22 @@ final class Workspace {
         }
         tabsDidChange()
         Task { await file.library.load() }
+    }
+
+    /// A locked note opens only as one of the library's notes: only the
+    /// library holds its key. One from elsewhere is refused.
+    private func openLockedNote(_ url: URL) {
+        Task { @MainActor in
+            await loadLibrary().value
+            if let note = library.notes.first(where: { $0.fileURL?.path == url.path }) {
+                open(note: note.id)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "“\(url.deletingPathExtension().lastPathComponent)” is a locked note from elsewhere"
+            alert.informativeText = "Locked notes open only in the Minote library they belong to."
+            alert.runModal()
+        }
     }
 
     /// File ▸ Open…
@@ -446,11 +550,13 @@ final class Workspace {
             for tab in window.tabs {
                 let kind = tab.isLibraryTab ? "note" : "file"
                 let marks = [tab === window.selectedTab ? "selected" : nil, tab.isEdited ? "edited" : nil,
-                             tab.isUntouched ? "italic" : nil].compactMap { $0 }
+                             tab.isUntouched ? "italic" : nil, tab.note?.isLocked == true ? "locked" : nil,
+                             tab.note?.isSealed == true ? "sealed" : nil].compactMap { $0 }
                 lines.append("  \(kind) \"\(tab.title)\" \(marks.joined(separator: " "))")
             }
         }
         lines.append("library loaded \(library.isLoaded), notes \(library.notes.count), selected \(library.selectedNote?.displayTitle ?? "-")")
+        lines.append("lock password \(library.hasPassword), scope \(library.lockScope.rawValue), unlocked \(library.isUnlocked), libraryLocked \(library.isLibraryLocked)")
         return lines.joined(separator: "\n")
     }
     #endif
@@ -484,7 +590,7 @@ final class Workspace {
             let untouched = window.tabs.filter(\.isUntouched).compactMap(\.fileName)
             return SavedTabs.Window(notes: kept, front: min(front, kept.count - 1), untouched: untouched.isEmpty ? nil : untouched)
         }
-        SavedTabs(windows: saved).save()
+        SavedTabs(windows: saved).save(to: tabDefaults)
     }
 
     /// Puts back the last session's library tabs, starting in the first
@@ -496,7 +602,7 @@ final class Workspace {
         restoresTabs = false
         let names = Set(library.notes.compactMap { $0.fileURL?.lastPathComponent })
         guard libraryTabs.count == 1, let first = libraryTabs.first, !first.isEdited, let firstWindow = first.window,
-              let saved = SavedTabs.load()?.restored(existing: names), !saved.windows.isEmpty else { return }
+              let saved = SavedTabs.load(from: tabDefaults)?.restored(existing: names), !saved.windows.isEmpty else { return }
 
         library.show(nil, in: first.editor)
         // Back to front, so the window that was in front ends up there.

@@ -7,12 +7,28 @@ struct RootView: View {
     @Bindable var library: Library
     @Bindable var state: MobileState
     let storage: LibraryStorageSwitcher
+    let lock: LockController
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $state.preferredColumn) {
             NotesList(library: library, state: state, storage: storage)
         } detail: {
-            EditorScreen(library: library, state: state)
+            EditorScreen(library: library, state: state, lock: lock)
+        }
+        .overlay {
+            if library.isLibraryLocked {
+                MobileLockScreen(lock: lock)
+                    .ignoresSafeArea()
+            } else if scenePhase != .active && library.isUnlocked && library.hasLockedNotes {
+                PrivacyCover()
+            }
+        }
+        .sheet(isPresented: $state.isShowingSecurity) {
+            MobileSecuritySettings(lock: lock) { state.isShowingSecurity = false }
+        }
+        .sheet(item: $state.passwordRequest) { request in
+            MobilePasswordSheet(request: request, lock: lock) { state.passwordRequest = nil }
         }
         .tint(Color(uiColor: EditorTheme.caret))
         .alert("Rename Note", isPresented: Binding(
@@ -67,6 +83,9 @@ struct NotesList: View {
                 .keyboardShortcut("n")
             }
             ToolbarItem(placement: .secondaryAction) {
+                Button("Locked Notes…", systemImage: "lock") { state.isShowingSecurity = true }
+            }
+            ToolbarItem(placement: .secondaryAction) {
                 Toggle(isOn: Binding(
                     get: { storage.storage == .iCloud },
                     set: { keep in Task { await storage.move(to: keep ? .iCloud : .local) } }
@@ -86,7 +105,9 @@ struct NotesList: View {
             Task { await library.duplicate(note.id) }
         }
         .disabled(note.isDraft)
-        if let url = note.fileURL {
+        LockMenuItem(note: note, library: library, state: state)
+        // A locked note's file is ciphertext: nothing to share.
+        if let url = note.fileURL, !note.isLocked {
             ShareLink(item: url)
         }
         Divider()
@@ -113,9 +134,15 @@ struct MobileNoteRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
-            Text(NoteDateText.string(for: note.modified))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            HStack(spacing: 4) {
+                if note.isLocked {
+                    Image(systemName: note.isSealed ? "lock.fill" : "lock.open.fill")
+                        .accessibilityLabel(note.isSealed ? "Locked" : "Unlocked")
+                }
+                Text(NoteDateText.string(for: note.modified))
+            }
+            .font(.caption)
+            .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
     }
@@ -125,13 +152,15 @@ struct MobileNoteRow: View {
 struct EditorScreen: View {
     @Bindable var library: Library
     @Bindable var state: MobileState
+    let lock: LockController
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var preferences = EditorPreferences()
 
-    init(library: Library, state: MobileState) {
+    init(library: Library, state: MobileState, lock: LockController) {
         self.library = library
         self.state = state
+        self.lock = lock
     }
 
     var body: some View {
@@ -142,6 +171,12 @@ struct EditorScreen: View {
             isWide: sizeClass == .regular
         )
         .ignoresSafeArea(.container, edges: .bottom)
+        // Over the editor, never instead of it: removing it would detach it from the library.
+        .overlay {
+            if let note = library.selectedNote, note.isSealed {
+                LockedNoteView(note: note, lock: lock)
+            }
+        }
         .background(Color(uiColor: EditorPalette.standard.background))
         .navigationTitle(library.selectedNote?.displayTitle ?? "")
         .navigationBarTitleDisplayMode(.inline)
@@ -162,6 +197,7 @@ struct EditorScreen: View {
     private var viewMenu: some View {
         Section(statisticsLine) {
             Toggle("Preview", systemImage: "eye", isOn: $state.isPreviewing)
+                .disabled(library.selectedNote?.isSealed == true)
         }
         Section {
             Toggle("Focus Mode", systemImage: "scope", isOn: preferences.$focusEnabled)
@@ -190,7 +226,8 @@ struct EditorScreen: View {
             Section {
                 Button("Rename…", systemImage: "pencil") { state.renaming = note }
                     .disabled(note.isBlankDraft)
-                if let url = note.fileURL {
+                LockMenuItem(note: note, library: library, state: state)
+                if let url = note.fileURL, !note.isLocked {
                     ShareLink(item: url)
                 }
             }
@@ -226,6 +263,7 @@ struct RenameField: View {
 struct MobileCommands: Commands {
     let library: Library
     let state: MobileState
+    let lock: LockController
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -234,6 +272,10 @@ struct MobileCommands: Commands {
                 state.preferredColumn = .detail
             }
             .keyboardShortcut("n")
+            .disabled(library.isLibraryLocked)
+            Button("Lock Now") { lock.lockNow() }
+                .keyboardShortcut("l", modifiers: [.command, .control])
+                .disabled(!library.isUnlocked)
         }
         CommandGroup(after: .sidebar) {
             Toggle("Preview", isOn: Binding(get: { state.isPreviewing }, set: { state.isPreviewing = $0 }))
@@ -242,6 +284,45 @@ struct MobileCommands: Commands {
         }
         CommandGroup(replacing: .textFormatting) {
             FormatMenuItems(isEnabled: state.isEditorFocused) { state.editor?.perform($0) }
+        }
+    }
+}
+
+/// Lock Note or Remove Lock, for the list's and the page's menus.
+struct LockMenuItem: View {
+    let note: Note
+    let library: Library
+    let state: MobileState
+
+    var body: some View {
+        if note.isLocked {
+            Button("Remove Lock", systemImage: "lock.open") {
+                Task {
+                    do { try await library.removeLock(note.id) } catch {
+                        library.presentedError = LibraryError(title: "Couldn't remove the lock", message: error.localizedDescription)
+                    }
+                }
+            }
+            .disabled(note.isSealed || library.lockScope == .library)
+        } else {
+            Button("Lock Note", systemImage: "lock") { lockNote() }
+                .disabled(note.isBlankDraft)
+        }
+    }
+
+    private func lockNote() {
+        guard library.hasPassword else {
+            if library.canSetPassword { state.passwordRequest = MobilePasswordRequest(kind: .set, thenLock: note.id) }
+            return
+        }
+        Task {
+            if !library.isUnlocked, !(await state.lock?.unlockWithBiometrics(reason: "lock this note") ?? false) {
+                state.passwordRequest = MobilePasswordRequest(kind: .unlock, thenLock: note.id)
+                return
+            }
+            do { try await library.lock(note.id) } catch {
+                library.presentedError = LibraryError(title: "Couldn't lock the note", message: error.localizedDescription)
+            }
         }
     }
 }

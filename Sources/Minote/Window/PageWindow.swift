@@ -264,6 +264,12 @@ struct PageView: View {
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
     @AppStorage(PreferenceKey.sidebarWidth) private var sidebarWidth = SidebarMetrics.defaultWidth
 
+    /// Whole library mode, locked: nothing of the library shows. A file
+    /// opened from Finder isn't the library's, and stays readable.
+    private var isCoveredByLock: Bool {
+        workspace.library.isLibraryLocked && (state.isSidebarVisible || state.tabs.contains(where: \.isLibraryTab))
+    }
+
     var body: some View {
         let palette = theme.palette
         HStack(spacing: 0) {
@@ -276,7 +282,7 @@ struct PageView: View {
             VStack(spacing: 0) {
                 TabBar(page: page, workspace: workspace, state: state, palette: palette)
                 if let tab = state.selectedTab {
-                    EditorPage(tab: tab, windowState: state)
+                    EditorPage(tab: tab, windowState: state, workspace: workspace)
                         .id(ObjectIdentifier(tab))
                 } else {
                     Color(nsColor: palette.background)
@@ -284,7 +290,16 @@ struct PageView: View {
             }
             .frame(maxWidth: .infinity)
         }
+        // Covered, it's out of reach too: no keyboard focus, nothing for
+        // VoiceOver or other apps reading the window to find.
+        .disabled(isCoveredByLock)
+        .accessibilityHidden(isCoveredByLock)
         .clipped()
+        .overlay {
+            if isCoveredByLock {
+                AppLockView(lock: workspace.lock, palette: palette)
+            }
+        }
         .background(Color(nsColor: palette.background))
         .background(WindowBackground(color: palette.background))
         .onChange(of: state.isSidebarVisible, initial: true) { _, visible in
@@ -297,6 +312,9 @@ struct PageView: View {
         }
         .sheet(item: $state.renaming) { note in
             RenameSheet(note: note, library: workspace.library) { state.renaming = nil }
+        }
+        .sheet(item: $state.passwordRequest) { request in
+            PasswordSheet(request: request, lock: workspace.lock) { state.passwordRequest = nil }
         }
         .libraryErrorAlert(workspace.library, isEnabled: workspace.alertWindow === page)
     }

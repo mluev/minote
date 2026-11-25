@@ -35,6 +35,19 @@
 				<string>net.daringfireball.markdown</string>
 			</array>
 		</dict>
+		<!-- Locked notes: opened as the library's own notes, or refused. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Minote Locked Note</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.mlutfullaev.minote.locked-note</string>
+			</array>
+		</dict>
 		<!-- Offered in Finder's Open With for other plain text. -->
 		<dict>
 			<key>CFBundleTypeName</key>
@@ -71,6 +84,28 @@
 	<false/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Minote</string>
+	<!-- A locked note: encrypted, not text, so no other app takes it for Markdown. -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.mlutfullaev.minote.locked-note</string>
+			<key>UTTypeDescription</key>
+			<string>Minote Locked Note</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mdlock</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>

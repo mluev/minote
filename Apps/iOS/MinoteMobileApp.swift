@@ -6,26 +6,43 @@ import UIKit
 @main
 struct MinoteMobileApp: App {
     @ViewState private var library: Library
-    @ViewState private var state = MobileState()
+    @ViewState private var state: MobileState
+    @ViewState private var lock: LockController
     @Environment(\.scenePhase) private var scenePhase
 
     @ViewState private var storage: LibraryStorageSwitcher
 
     init() {
+        var biometrics: any BiometricUnlocking = SecureEnclaveUnlock()
         #if DEBUG
-        // UI tests start from a known note.
-        if let seed = ProcessInfo.processInfo.environment["MINOTE_UITEST_NOTE"] {
+        // UI tests start from a known note, and have no face for Face ID.
+        let environment = ProcessInfo.processInfo.environment
+        if let seed = environment["MINOTE_UITEST_NOTE"] {
             let directory = LibraryLocation.defaultDirectory()
-            for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] where NoteNaming.isNoteFile(file) {
+            for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            where NoteNaming.isNoteFile(file) || file.lastPathComponent == VaultRecord.fileName {
                 try? FileManager.default.removeItem(at: file)
             }
+            UserDefaults.standard.removeObject(forKey: "LockVault")
             try? seed.write(to: directory.appendingPathComponent("UI Test.md"), atomically: true, encoding: .utf8)
+            // A locked note, sealed with this password.
+            if let password = environment["MINOTE_UITEST_LOCKED"],
+               let key = try? LibraryKey.create(password: password, hint: "the test one", rounds: 1_000) {
+                try? NoteSealer(key).seal("Locked Test\nThe hidden line").write(to: directory.appendingPathComponent("Locked Test.mdlock"))
+                try? VaultRecord(key: key.record, scope: .notes).encoded().write(to: directory.appendingPathComponent(VaultRecord.fileName))
+            }
+            biometrics = FakeBiometricUnlock()
         }
         #endif
         let backups = LibraryLocation.backupDirectory()
         let store = NoteFileStore(directory: LibraryLocation.defaultDirectory(), backupDirectory: backups, trash: MobileTrash.moveToTrash)
         let library = Library(store: store, watcher: PathWatcher(url: store.directory))
         _library = ViewState(initialValue: library)
+        let lock = LockController(library: library, biometrics: biometrics)
+        _lock = ViewState(initialValue: lock)
+        let state = MobileState()
+        state.lock = lock
+        _state = ViewState(initialValue: state)
         _storage = ViewState(initialValue: LibraryStorageSwitcher(
             library: library,
             makeStore: { directory, isUbiquitous in
@@ -38,14 +55,20 @@ struct MinoteMobileApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(library: library, state: state, storage: storage)
+            RootView(library: library, state: state, storage: storage, lock: lock)
                 .task { await storage.open() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .background, .inactive:
+            case .background:
+                // Leaving Minote locks the notes. Not on `.inactive`: Face ID's
+                // own prompt makes the scene inactive (the privacy cover hides
+                // the page meanwhile).
+                saveInBackground(locking: true)
+            case .inactive:
                 saveInBackground()
             case .active:
+                lock.noteActivity()
                 // Catch up with changes made in the Files app meanwhile (once
                 // the library is open: at launch, opening does the first scan).
                 if library.isLoaded { Task { await library.rescanNow() } }
@@ -54,14 +77,16 @@ struct MinoteMobileApp: App {
             }
         }
         .commands {
-            MobileCommands(library: library, state: state)
+            MobileCommands(library: library, state: state, lock: lock)
         }
     }
 
     /// Writes pending edits when the app leaves the screen. iOS may suspend the
-    /// app right after, so the save runs inside a background task.
-    private func saveInBackground() {
+    /// app right after, so the save runs inside a background task. `locking`
+    /// takes locked notes' text out of memory first (at once, not in the task).
+    private func saveInBackground(locking: Bool = false) {
         let task = BackgroundTask(named: "Save notes")
+        if locking { lock.lockNow() }
         Task {
             await library.saveNow()
             task.end()
@@ -103,6 +128,11 @@ final class MobileState {
     var isPreviewing = false
     /// Which column shows on iPhone: the library first.
     var preferredColumn: NavigationSplitViewColumn = .sidebar
+    /// The Locked Notes settings sheet.
+    var isShowingSecurity = false
+    /// The password sheet for a command (Lock Note without a password, or while locked).
+    var passwordRequest: MobilePasswordRequest?
 
     @ObservationIgnored weak var editor: MobileEditorCoordinator?
+    @ObservationIgnored weak var lock: LockController?
 }
