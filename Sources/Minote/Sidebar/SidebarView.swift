@@ -70,6 +70,8 @@ struct SidebarView: View {
             return .handled
         }
         .onDeleteCommand {
+            // Behind the Whole Library lock screen, the list may still have focus.
+            guard !library.isLibraryLocked else { return }
             if let id = selectedID, library.note(with: id) != nil { trash(id) }
         }
         .onChange(of: state.sidebarFocusRequest) {
@@ -130,6 +132,13 @@ struct SidebarView: View {
             Task { await library.duplicate(note.id) }
         }
         .disabled(note.isDraft)
+        if note.isLocked {
+            Button("Remove Lock") { workspace.removeLock(note.id) }
+                .disabled(note.isSealed || library.lockScope == .library)
+        } else {
+            Button("Lock Note") { workspace.lockNote(note.id, in: state) }
+                .disabled(note.isBlankDraft)
+        }
         Divider()
         Button("Move to Trash") { trash(note.id) }
     }
@@ -155,9 +164,16 @@ struct NoteRow: View {
                     .foregroundStyle(Color(nsColor: palette.quote))
                     .lineLimit(2)
             }
-            Text(NoteDateText.string(for: note.modified))
-                .font(.system(size: 11))
-                .foregroundStyle(Color(nsColor: palette.syntax))
+            HStack(spacing: 4) {
+                if note.isLocked {
+                    Image(systemName: note.isSealed ? "lock.fill" : "lock.open.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .accessibilityLabel(note.isSealed ? "Locked" : "Unlocked")
+                }
+                Text(NoteDateText.string(for: note.modified))
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(Color(nsColor: palette.syntax))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)

@@ -6,8 +6,13 @@ public enum NoteNaming {
     /// Extension used for files Minote creates.
     public static let fileExtension = "md"
 
-    /// Extensions the library lists. Anything else in the folder is ignored.
+    /// Extensions of plain notes: listed by the library, and what opens from
+    /// Finder or File ▸ Open….
     public static let supportedExtensions: Set<String> = ["md", "markdown", "txt", "text"]
+
+    /// Extension of locked notes. Listed by the library, but never opened on
+    /// their own: only the library holds the key.
+    public static let lockedExtension = LockedNoteFile.fileExtension
 
     /// File name used when a note has no usable first line.
     public static let untitled = "Untitled"
@@ -157,9 +162,19 @@ public enum NoteNaming {
             .compare(b.precomposedStringWithCanonicalMapping, options: [.caseInsensitive]) == .orderedSame
     }
 
-    /// Whether a URL has an extension the library lists.
+    /// Whether a URL has an extension the library lists: a plain or a locked note.
     public static func isNoteFile(_ url: URL) -> Bool {
+        isPlainNoteFile(url) || isLockedFile(url)
+    }
+
+    /// Whether a URL is a plain-text note, which can also be opened on its own.
+    public static func isPlainNoteFile(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// Whether a URL is a locked note.
+    public static func isLockedFile(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == lockedExtension
     }
 
     /// The note an iCloud placeholder stands for: iCloud keeps notes that

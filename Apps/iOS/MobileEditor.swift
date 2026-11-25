@@ -43,6 +43,9 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     private let engine: EditorTextEngine
 
     private(set) var displayedNoteID: Note.ID?
+    /// Showing a sealed note: an empty page under the locked overlay, which
+    /// nothing (not even a hardware keyboard) can type into.
+    private(set) var isSealedDisplay = false
     private var isReplacingText = false
     private var isAdjustingSelection = false
     private var statisticsTask: Task<Void, Never>?
@@ -76,7 +79,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         let change = engine.apply(configuration, hangsMarkers: isWide, selection: textView.selectedRange)
         if change.contains(.preview) {
             if configuration.preview { textView.resignFirstResponder() }
-            textView.isEditable = displayedNoteID != nil && !configuration.preview
+            updateEditable()
         }
         if change.contains(.styleSheet) {
             textView.apply(engine.styleSheet)
@@ -91,12 +94,14 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     var isCaretInTitleLine: Bool { engine.isCaretInTitleLine(textView.selectedRange) }
 
     func display(_ note: Note?) {
-        if let current = displayedNoteID { selections[current] = textView.selectedRange }
+        if let current = displayedNoteID, !isSealedDisplay { selections[current] = textView.selectedRange }
         displayedNoteID = note?.id
+        isSealedDisplay = note?.isSealed == true
+        if isSealedDisplay { textView.resignFirstResponder() }
         replaceText(with: note?.text ?? "")
-        textView.isEditable = note != nil && !engine.configuration.preview
+        updateEditable()
         textView.undoManager?.removeAllActions()
-        if let note, let selection = selections[note.id] {
+        if let note, !isSealedDisplay, let selection = selections[note.id] {
             textView.selectedRange = selection.clamped(to: textView.textStorage.length)
             textView.scrollRangeToVisible(textView.selectedRange)
         } else {
@@ -108,6 +113,14 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
 
     func currentText() -> String {
         textView.text
+    }
+
+    func forgetText(of ids: Set<Note.ID>) {
+        if let id = displayedNoteID, ids.contains(id) { textView.undoManager?.removeAllActions() }
+    }
+
+    private func updateEditable() {
+        textView.isEditable = displayedNoteID != nil && !engine.configuration.preview && !isSealedDisplay
     }
 
     func reloadText(_ text: String) {
@@ -123,6 +136,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     /// Called for a new note (and Return in the iPad list): start typing,
     /// leaving Preview.
     func focus() {
+        guard !isSealedDisplay else { return }
         pendingTapTarget = false
         if engine.configuration.preview {
             state?.isPreviewing = false
@@ -185,7 +199,8 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
     }
 
     func textViewDidChange(_ textView: UITextView) {
-        guard !isReplacingText, let id = displayedNoteID else { return }
+        guard !isReplacingText, !isSealedDisplay, let id = displayedNoteID else { return }
+        state?.lock?.noteActivity()
         library?.editorDidChange(noteID: id, prefix: engine.titlePrefix())
         afterChange()
     }

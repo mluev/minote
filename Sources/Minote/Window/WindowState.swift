@@ -20,6 +20,8 @@ final class WindowState {
     var sidebarFocusRequest = 0
     /// The note being renamed (File ▸ Rename…), if any.
     var renaming: Note?
+    /// The password sheet: setting one, changing it, or unlocking for a command.
+    var passwordRequest: PasswordRequest?
     /// The text settings popover (font, size, theme) is open.
     var isShowingTextSettings = false
     /// The tab under the pointer: it shows its close button (and a middle

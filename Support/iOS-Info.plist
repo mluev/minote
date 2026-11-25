@@ -26,6 +26,8 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID unlocks your locked notes.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<!-- Notes are ordinary files: visible in the Files app under "On My iPhone ▸ Minote". -->

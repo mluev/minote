@@ -32,6 +32,6 @@ final class OpenedFile {
 
     /// Markdown and other plain text; anything else isn't Minote's to edit.
     static func canOpen(_ url: URL) -> Bool {
-        NoteNaming.isNoteFile(url) || UTType(filenameExtension: url.pathExtension)?.conforms(to: .plainText) == true
+        NoteNaming.isPlainNoteFile(url) || UTType(filenameExtension: url.pathExtension)?.conforms(to: .plainText) == true
     }
 }

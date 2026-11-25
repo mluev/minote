@@ -13,9 +13,10 @@ struct MinoteApp: App {
 
     /// Every window is AppKit's own (`PageWindow`, with its tabs), made only
     /// when needed: opening a file from Finder must not pay for the library.
-    /// SwiftUI contributes the menus; the empty Settings scene only hosts them.
+    /// SwiftUI contributes the menus and Settings (locked notes), which is
+    /// built only when opened.
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings { SecuritySettingsView(workspace: appDelegate.workspace) }
             .commands {
                 AppCommands(workspace: appDelegate.workspace)
             }
@@ -28,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let workspace = Workspace()
     private var tabKeys: Any?
     private var middleClicks: Any?
+    private var activity: Any?
+    private var autoLock: AutoLock?
 
     /// Writing defaults: Markdown is typed literally, spelling is checked.
     /// Registered (not set), so Edit ▸ Substitutions toggles still win.
@@ -47,9 +50,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PageTheme.applySaved()
         workspace.refreshRecents()
         tabKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let handled = MainActor.assumeIsolated { self?.handleTabKey(event) ?? false }
+            let handled = MainActor.assumeIsolated {
+                self?.workspace.lock.noteActivity()
+                return self?.handleTabKey(event) ?? false
+            }
             return handled ? nil : event
         }
+        // Using Minote keeps unlocked notes open; a while without it locks them.
+        activity = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
+            MainActor.assumeIsolated { self?.workspace.lock.noteActivity() }
+            return event
+        }
+        autoLock = AutoLock(lock: workspace.lock) { [weak self] in self?.workspace.promptUnlockIfNeeded() }
         // A middle click on a tab closes it, as in browsers and editors.
         middleClicks = NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [weak self] event in
             let handled = MainActor.assumeIsolated { self?.handleMiddleClick(event) ?? false }
@@ -76,6 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         workspace.showLibrary()
         return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        workspace.promptUnlockIfNeeded()
     }
 
     func applicationDidResignActive(_ notification: Notification) {

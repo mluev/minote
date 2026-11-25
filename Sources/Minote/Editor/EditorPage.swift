@@ -7,27 +7,38 @@ import SwiftUI
 struct EditorPage: View {
     let tab: PageTab
     let windowState: WindowState
+    let workspace: Workspace
 
     private var preferences = EditorPreferences()
     @AppStorage(PreferenceKey.showCounter) private var showCounter = false
     @AppStorage(PreferenceKey.appearance) private var theme = PageTheme.system
 
-    init(tab: PageTab, windowState: WindowState) {
+    init(tab: PageTab, windowState: WindowState, workspace: Workspace) {
         self.tab = tab
         self.windowState = windowState
+        self.workspace = workspace
     }
 
+    /// A locked note whose text isn't in memory: its panel, not its page.
+    private var isSealed: Bool { tab.note?.isSealed == true }
+
     var body: some View {
-        GeometryReader { proxy in
-            EditorView(
-                editor: tab.editor,
-                configuration: preferences.configuration(preview: tab.isPreviewing, paper: theme.paper),
-                viewportHeight: proxy.size.height
-            )
+        Group {
+            if isSealed {
+                LockedNotePanel(tab: tab, workspace: workspace, palette: theme.palette)
+            } else {
+                GeometryReader { proxy in
+                    EditorView(
+                        editor: tab.editor,
+                        configuration: preferences.configuration(preview: tab.isPreviewing, paper: theme.paper),
+                        viewportHeight: proxy.size.height
+                    )
+                }
+            }
         }
         .background(Color(nsColor: theme.palette.background))
         .overlay(alignment: .bottomTrailing) {
-            if showCounter {
+            if showCounter && !isSealed {
                 WordCounter(tab: tab)
                     .padding(8)
             }

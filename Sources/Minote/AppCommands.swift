@@ -18,13 +18,12 @@ struct AppCommands: Commands {
     }
 
     var body: some Commands {
-        // No Settings window: every preference lives in the menus.
-        CommandGroup(replacing: .appSettings) {}
+        // Settings… holds only locked notes; every other preference lives in the menus.
         TextEditingCommands()
         fileCommands
         editCommands
         CommandMenu("Format") {
-            FormatMenuItems(isEnabled: front?.isEditorFocused ?? false) { front?.editor.perform($0) }
+            FormatMenuItems(isEnabled: (front?.isEditorFocused ?? false) && front?.note?.isSealed != true) { front?.editor.perform($0) }
         }
         viewCommands
         windowCommands
@@ -48,6 +47,12 @@ struct AppCommands: Commands {
     /// The note of the tab in front, whichever library it's in.
     private var frontNote: Note? { front?.note }
 
+    /// Lock Note, or Remove Lock from an open one (not in Whole library mode).
+    private var canToggleLock: Bool {
+        guard let note = frontLibraryNote, !note.isBlankDraft, !library.isLibraryLocked else { return false }
+        return !note.isLocked || (!note.isSealed && library.lockScope == .notes)
+    }
+
     // MARK: File
 
     @CommandsBuilder private var fileCommands: some Commands {
@@ -56,6 +61,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n")
             Button("New Tab") { workspace.newTab() }
                 .keyboardShortcut("t")
+            Button("New Locked Note") { workspace.newNote(locked: true) }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(!library.hasPassword || library.lockScope == .library)
             Button("Open…") { workspace.showOpenPanel() }
                 .keyboardShortcut("o")
             Menu("Open Recent") {
@@ -81,9 +89,18 @@ struct AppCommands: Commands {
                 Task { await library.duplicate(id) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(frontLibraryNote?.isDraft ?? true)
+            .disabled(frontLibraryNote?.isDraft ?? true || frontLibraryNote?.isSealed == true || library.isLibraryLocked)
             Button("Rename…") { frontWindow?.renaming = frontLibraryNote }
-                .disabled(frontLibraryNote?.isBlankDraft ?? true)
+                .disabled(frontLibraryNote?.isBlankDraft ?? true || library.isLibraryLocked)
+            Divider()
+            Button(frontLibraryNote?.isLocked == true ? "Remove Lock" : "Lock Note") {
+                guard let note = frontLibraryNote else { return }
+                if note.isLocked { workspace.removeLock(note.id) } else { workspace.lockNote(note.id, in: frontWindow) }
+            }
+            .disabled(!canToggleLock)
+            Button("Lock Now") { workspace.lock.lockNow() }
+                .keyboardShortcut("l", modifiers: [.command, .control])
+                .disabled(!library.isUnlocked)
             Divider()
             Button("Show in Finder") {
                 if let url = frontNote?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -103,7 +120,7 @@ struct AppCommands: Commands {
                 library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil)
+            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil || library.isLibraryLocked)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
@@ -111,7 +128,7 @@ struct AppCommands: Commands {
                 front?.editor.printNote(title: title.isEmpty ? "Note" : title)
             }
             .keyboardShortcut("p")
-            .disabled(frontNote == nil)
+            .disabled(frontNote == nil || frontNote?.isSealed == true)
         }
     }
 
@@ -126,6 +143,7 @@ struct AppCommands: Commands {
                 window.searchFocusRequest += 1
             }
             .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(library.isLibraryLocked)
         }
     }
 
@@ -144,7 +162,7 @@ struct AppCommands: Commands {
             Divider()
             Toggle("Preview", isOn: Binding(get: { front?.isPreviewing ?? false }, set: { front?.isPreviewing = $0 }))
                 .keyboardShortcut("r")
-                .disabled(frontNote == nil)
+                .disabled(frontNote == nil || frontNote?.isSealed == true)
             Divider()
             Toggle("Focus Mode", isOn: preferences.$focusEnabled)
                 .keyboardShortcut("d")
