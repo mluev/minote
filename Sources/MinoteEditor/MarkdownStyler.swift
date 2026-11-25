@@ -13,7 +13,8 @@ import NaturalLanguage
 /// larger bold headings, real bold and italic, underlined links, drawn
 /// bullets, task boxes, quote bars, rules and code boxes (see
 /// `MarkdownLayoutFragment`). Only the inline formatting under the caret
-/// (`revealRange`) shows its markup, dimmed, so it can be edited. Source view
+/// (`revealRange`) shows its markup, dimmed, so it can be edited. A table
+/// nobody is editing is drawn as a table (`RenderedTable`). Source view
 /// (`showsSyntax`) dims markup everywhere, the way iA Writer does.
 ///
 /// Only the lines that changed are restyled, so typing cost doesn't grow
@@ -28,6 +29,16 @@ public final class MarkdownStyler {
     public var showsSyntax = false
     /// Lines touching this range show their markup in rendered view.
     public var revealRange: NSRange?
+    /// Tables nobody is editing are drawn as tables. Off for printing, which
+    /// lays text out without our layout fragments.
+    public var drawsTables = true
+    /// The text column's real width (narrower than the style sheet's in a
+    /// narrow window): drawn tables are fitted to it.
+    public var availableWidth: CGFloat {
+        get { columnWidth ?? styleSheet.columnWidth }
+        set { columnWidth = newValue }
+    }
+    private var columnWidth: CGFloat?
 
     private lazy var tagger = NLTagger(tagSchemes: [.lexicalClass])
 
@@ -89,7 +100,8 @@ public final class MarkdownStyler {
                     let delimiter = MarkdownLexer.isTableDelimiterRow(chars[line.contentStart...])
                     let header = !delimiter && Self.isTableRow(at: lineEnd, in: string, fences: fences)
                         && Self.isTableDelimiterRow(startingAt: lineEnd, in: string)
-                    row = TableRow(location: location, lineEnd: lineEnd, chars: chars, line: line, isHeader: header, isDelimiter: delimiter)
+                    row = TableRow(location: location, lineEnd: lineEnd, chars: chars, line: line, isHeader: header,
+                                   isDelimiter: delimiter, isRevealed: reveal != nil)
                 }
                 apply(line, chars: chars, at: location, lineEnd: lineEnd, rendered: rendered, reveal: reveal,
                       codeEdges: codeEdges, tableRow: row, to: storage)
@@ -139,6 +151,20 @@ public final class MarkdownStyler {
         /// The row above a delimiter row.
         var isHeader: Bool
         var isDelimiter: Bool
+        /// The caret or selection is on it: it is being edited.
+        var isRevealed: Bool
+    }
+
+    /// How a table looks in rendered view. Its rows are first styled as text
+    /// (pipes and the delimiter row dimmed); the mode decorates them.
+    private enum TableMode {
+        /// Drawn as a table in place of its hidden rows: nobody is editing it.
+        case drawn(RenderedTable)
+        /// Rows as text over a grid, cells padded to line up: being edited.
+        case aligned
+        /// Each row draws its own part of the grid, columns not lined up: a
+        /// table too long to restyle whole on every keystroke.
+        case unaligned(startsTable: Bool)
     }
 
     /// `range`'s lines, widened to the whole tables they touch: a table's
@@ -195,21 +221,97 @@ public final class MarkdownStyler {
         return MarkdownLexer.isTableDelimiterRow(string.characters(in: location..<contentsEnd))
     }
 
-    /// A run of table rows in rendered view, already styled line by line:
-    /// the grid each row draws (`MarkdownBlock.tableRow`) and, when the run
-    /// is a whole table short enough, columns that line up.
+    /// A run of table rows in rendered view, already styled line by line as text.
     private func styleTable(_ rows: [TableRow], in storage: NSTextStorage, fences: FenceIndex) {
+        switch tableMode(rows, in: storage, fences: fences) {
+        case .drawn(let table):
+            hide(rows, drawing: table, in: storage)
+        case .aligned:
+            drawGrid(rows, startsTable: true, in: storage)
+            alignColumns(rows, in: storage)
+        case .unaligned(let startsTable):
+            drawGrid(rows, startsTable: startsTable, in: storage)
+        }
+    }
+
+    private func tableMode(_ rows: [TableRow], in storage: NSTextStorage, fences: FenceIndex) -> TableMode {
         let string = storage.mutableString
         let first = rows[0].location
         let startsTable = first == 0 || !Self.isTableRow(at: string.lineRange(for: NSRange(location: first - 1, length: 0)).location, in: string, fences: fences)
         let endsTable = !Self.isTableRow(at: rows[rows.count - 1].lineEnd, in: string, fences: fences)
+        guard startsTable, endsTable, rows.count <= Self.maxAlignedTableRows else { return .unaligned(startsTable: startsTable) }
+        if drawsTables, !rows.contains(where: \.isRevealed), rows.count > 1, rows[1].isDelimiter, let table = renderedTable(rows, in: storage) {
+            return .drawn(table)
+        }
+        return .aligned
+    }
+
+    /// The table drawn for rows whose second is a delimiter row.
+    private func renderedTable(_ rows: [TableRow], in storage: NSTextStorage) -> RenderedTable? {
+        let cells = rows.enumerated().filter { $0.offset != 1 }.map { _, row in
+            MarkdownTable.cells(of: row.line, in: row.chars).map { cellText($0, of: row, in: storage) }
+        }
+        guard let header = cells.first, !header.isEmpty else { return nil }
+        return RenderedTable(header: header, body: Array(cells.dropFirst()),
+                             alignments: MarkdownTable.alignments(delimiterRow: rows[1].line, in: rows[1].chars),
+                             availableWidth: availableWidth, styleSheet: styleSheet)
+    }
+
+    /// A cell's text as styled, without its surrounding spaces or the markup
+    /// the page hides.
+    private func cellText(_ cell: Range<Int>, of row: TableRow, in storage: NSTextStorage) -> NSAttributedString {
+        func isSpace(_ i: Int) -> Bool { row.chars[i] == 0x20 || row.chars[i] == 0x09 }
+        var lower = cell.lowerBound, upper = cell.upperBound
+        while lower < upper, isSpace(lower) { lower += 1 }
+        while upper > lower, isSpace(upper - 1) { upper -= 1 }
+        let text = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: NSRange(location: row.location + lower, length: upper - lower)))
+        let all = NSRange(location: 0, length: text.length)
+        text.enumerateAttribute(.font, in: all, options: .reverse) { value, run, _ in
+            if let font = value as? PlatformFont, font.pointSize < 1 { text.deleteCharacters(in: run) }
+        }
+        for key: NSAttributedString.Key in [.paragraphStyle, .baselineOffset, .kern, .minoteMark, .minoteBlock, .minoteLink] {
+            text.removeAttribute(key, range: NSRange(location: 0, length: text.length))
+        }
+        return text
+    }
+
+    /// A drawn table's source: every row hidden and exactly as tall as its
+    /// part of the table, which it draws.
+    private func hide(_ rows: [TableRow], drawing table: RenderedTable, in storage: NSTextStorage) {
+        for (row, line) in zip(rows, table.lines()) {
+            let style = NSMutableParagraphStyle()
+            style.minimumLineHeight = line.height
+            style.maximumLineHeight = line.height
+            storage.setAttributes([
+                .font: styleSheet.hiddenFont,
+                .foregroundColor: PlatformColor.clear,
+                .paragraphStyle: style,
+                .minoteTable: line,
+            ], range: NSRange(location: row.location, length: row.lineEnd - row.location))
+        }
+    }
+
+    /// Rows as text over a grid: each row draws its part of it
+    /// (`MarkdownBlock.tableRow`), its pipes become lines and the delimiter
+    /// row a thin line under the header.
+    private func drawGrid(_ rows: [TableRow], startsTable: Bool, in storage: NSTextStorage) {
+        let sheet = styleSheet
         for (index, row) in rows.enumerated() {
+            let fullLine = NSRange(location: row.location, length: row.lineEnd - row.location)
+            if row.isDelimiter {
+                // Its dashes keep their width: a column is at least as wide as its dashes.
+                storage.addAttributes([
+                    .foregroundColor: PlatformColor.clear,
+                    .paragraphStyle: sheet.paragraphStyle(firstLineIndent: 0, headIndent: 0, lineHeight: (sheet.lineHeight * 0.3).rounded()),
+                ], range: fullLine)
+            }
+            for pipe in row.line.tablePipes {
+                storage.addAttributes([.foregroundColor: PlatformColor.clear, .minoteMark: MarkdownMark.tablePipe.rawValue],
+                                      range: NSRange(location: row.location + pipe, length: 1))
+            }
             let block = MarkdownBlock.tableRow(top: index == 0 && startsTable, bottom: !row.isHeader && !row.isDelimiter,
                                                header: row.isHeader, delimiter: row.isDelimiter)
-            storage.addAttribute(.minoteBlock, value: block.rawValue, range: NSRange(location: row.location, length: row.lineEnd - row.location))
-        }
-        if startsTable, endsTable, rows.count <= Self.maxAlignedTableRows {
-            alignColumns(rows, in: storage)
+            storage.addAttribute(.minoteBlock, value: block.rawValue, range: fullLine)
         }
     }
 
@@ -335,17 +437,8 @@ public final class MarkdownStyler {
             }
             return
         case .table where tableRow?.isDelimiter == true:
-            guard rendered else {
-                storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: textRange)
-                return
-            }
-            // A thin row drawn as a line under the header. Its dashes keep
-            // their width: a column is at least as wide as its dashes.
-            storage.addAttributes([
-                .foregroundColor: PlatformColor.clear,
-                .paragraphStyle: sheet.paragraphStyle(firstLineIndent: 0, headIndent: 0, lineHeight: (sheet.lineHeight * 0.3).rounded()),
-            ], range: fullLine)
-            drawTablePipes(line, at: lineStart, in: storage)
+            // Markup, dimmed; a table's mode may draw it instead (`styleTable`).
+            storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: textRange)
             return
         default:
             break
@@ -380,7 +473,8 @@ public final class MarkdownStyler {
         }
 
         // What disappears in rendered view: inline markup, except where the
-        // caret is (so it can be edited). Table pipes are drawn as lines below.
+        // caret is (so it can be edited). Table pipes stay, dimmed; a table's
+        // mode may draw them instead (`styleTable`).
         let pipes = Set(line.tablePipes)
         if rendered {
             let shown = reveal.map { revealedRange(around: $0, flags: flags, from: blockMarkupEnd) } ?? 0..<0
@@ -418,10 +512,6 @@ public final class MarkdownStyler {
                 .foregroundColor: styleSheet.palette.doneTask,
             ], range: range(doneContent))
         }
-        if rendered, line.kind == .table {
-            drawTablePipes(line, at: lineStart, in: storage)
-        }
-
         if highlightsPartsOfSpeech {
             colorPartsOfSpeech(chars: chars, flags: flags, from: line.contentStart, at: lineStart, in: storage)
         }
@@ -469,14 +559,6 @@ public final class MarkdownStyler {
             .paragraphStyle: styleSheet.paragraphStyle(firstLineIndent: indent, headIndent: indent),
             .minoteBlock: MarkdownBlock.code(top: edges.top, bottom: edges.bottom).rawValue,
         ], range: fullLine)
-    }
-
-    /// A table row's pipes become thin lines.
-    private func drawTablePipes(_ line: MarkdownLine, at lineStart: Int, in storage: NSTextStorage) {
-        for pipe in line.tablePipes {
-            storage.addAttributes([.foregroundColor: PlatformColor.clear, .minoteMark: MarkdownMark.tablePipe.rawValue],
-                                  range: NSRange(location: lineStart + pipe, length: 1))
-        }
     }
 
     /// A heading's optional closing `###`.

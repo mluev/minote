@@ -117,12 +117,15 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
 
     /// A copy for printing or exporting: fully styled, without Focus fading,
     /// in standard ink (the sheet of paper is real; sepia is for the screen).
+    /// Tables are text: printing lays text out without our layout fragments.
     public func printableCopy() -> NSAttributedString {
         guard let storage else { return NSAttributedString() }
         let copy = NSTextStorage(attributedString: storage)
         let focus = styler.focusRange, reveal = styler.revealRange, screenSheet = styler.styleSheet
         styler.focusRange = nil
         styler.revealRange = nil
+        styler.drawsTables = false
+        defer { styler.drawsTables = true }
         if screenSheet.palette.paper != .standard {
             styler.styleSheet = EditorStyleSheet(family: configuration.family, size: CGFloat(configuration.size), hangsMarkers: hangsMarkers)
         }

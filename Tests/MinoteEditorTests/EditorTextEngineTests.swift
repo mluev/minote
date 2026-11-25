@@ -98,6 +98,7 @@ struct EditorTextEngineTests {
             (storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) == true
         }
         let (table, storage) = engine("| a |\n| b |")
+        table.selectionDidChange(NSRange(location: 8, length: 0))   // editing it: rows show as text
         #expect(!isBold(storage, at: 2))
         storage.replaceCharacters(in: NSRange(location: 8, length: 1), with: "-")   // "| - |": now a delimiter row
         #expect(isBold(storage, at: 2))
@@ -121,6 +122,30 @@ struct EditorTextEngineTests {
         storage.replaceCharacters(in: NSRange(location: after - 1, length: 0), with: "| a longer cell | g |")
         #expect(MarkdownStylerTests.lineUp(Array(MarkdownStylerTests.pipePositions(storage).prefix(5))))
         _ = engine
+    }
+
+    @Test func theCaretLeavingATableDrawsItAgain() {
+        let (engine, storage) = engine("text\n| a | b |\n|---|---|\n| c | d |\n\nafter")
+        func isDrawn() -> Bool { storage.attribute(.minoteTable, at: 5, effectiveRange: nil) != nil }
+        #expect(isDrawn())
+        engine.selectionDidChange(NSRange(location: 27, length: 0))
+        #expect(!isDrawn())
+        engine.selectionDidChange(NSRange(location: storage.length, length: 0))
+        #expect(isDrawn())
+    }
+
+    /// Printing lays text out without our fragments: tables print as text.
+    @Test func printingKeepsATablesText() {
+        let (engine, storage) = engine("| Name | Role |\n|---|---|\n| Alice | Engineer |")
+        #expect(storage.attribute(.minoteTable, at: 0, effectiveRange: nil) != nil)
+        let copy = engine.printableCopy()
+        #expect(copy.string.contains("Alice"))
+        let alice = (copy.string as NSString).range(of: "Alice").location
+        #expect(((copy.attribute(.font, at: alice, effectiveRange: nil) as? NSFont)?.pointSize ?? 0) > 1)
+        #expect(copy.attribute(.foregroundColor, at: alice, effectiveRange: nil) as? NSColor != .clear)
+        #expect(copy.attribute(.minoteTable, at: 0, effectiveRange: nil) == nil)
+        // The screen still draws it.
+        #expect(storage.attribute(.minoteTable, at: 0, effectiveRange: nil) != nil)
     }
 
     @Test func printingTurnsDrawingsIntoCharacters() {

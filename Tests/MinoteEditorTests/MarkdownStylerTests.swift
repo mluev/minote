@@ -7,12 +7,14 @@ import Testing
 @MainActor
 @Suite("Markdown styler")
 struct MarkdownStylerTests {
-    private func styled(_ text: String, reveal: NSRange? = nil, showsSyntax: Bool = false, focus: NSRange? = nil) -> (NSTextStorage, EditorStyleSheet) {
+    private func styled(_ text: String, reveal: NSRange? = nil, showsSyntax: Bool = false, focus: NSRange? = nil,
+                        width: CGFloat? = nil) -> (NSTextStorage, EditorStyleSheet) {
         let sheet = EditorStyleSheet(family: .sfMono, size: 18)
         let styler = MarkdownStyler(styleSheet: sheet)
         styler.revealRange = reveal
         styler.showsSyntax = showsSyntax
         styler.focusRange = focus
+        if let width { styler.availableWidth = width }
         let storage = NSTextStorage(string: text)
         styler.style(storage, range: NSRange(location: 0, length: storage.length), fences: FenceIndex(text: storage.mutableString))
         return (storage, sheet)
@@ -136,8 +138,10 @@ struct MarkdownStylerTests {
         #expect(mark(storage, at: 3) == .rule)
     }
 
+    /// While a table is edited (the caret on one of its rows), its rows are
+    /// text over a grid.
     @Test func tablePipesBecomeLines() {
-        let (storage, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |")
+        let (storage, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |", reveal: NSRange(location: 24, length: 0))
         #expect(mark(storage, at: 0) == .tablePipe)
         #expect(color(storage, at: 0) == .clear)
         #expect(font(storage, at: 2)?.fontDescriptor.symbolicTraits.contains(.bold) == true)  // header row
@@ -148,7 +152,7 @@ struct MarkdownStylerTests {
     }
 
     @Test func tableRowsDrawTheirPartOfTheGrid() {
-        let (storage, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nafter")
+        let (storage, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nafter", reveal: NSRange(location: 32, length: 0))
         #expect(block(storage, at: 0) == .tableRow(top: true, bottom: false, header: true, delimiter: false))
         #expect(block(storage, at: 10) == .tableRow(top: false, bottom: false, header: false, delimiter: true))
         #expect(block(storage, at: 20) == .tableRow(top: false, bottom: true, header: false, delimiter: false))
@@ -189,6 +193,7 @@ struct MarkdownStylerTests {
     func tableColumnsLineUp(_ family: EditorFontFamily) {
         let text = "| Name | **Role** | Score |\n|:-----|:-:|---:|\n| Alice Smith | Engineer | 42 |\n| Bob | [PM](https://x.com) | 1000 |"
         let styler = MarkdownStyler(styleSheet: EditorStyleSheet(family: family, size: 18))
+        styler.revealRange = NSRange(location: (text as NSString).range(of: "Alice").location, length: 0)
         let storage = NSTextStorage(string: text)
         styler.style(storage, range: NSRange(location: 0, length: storage.length), fences: FenceIndex(text: storage.mutableString))
         let rows = Self.pipePositions(storage)
@@ -205,7 +210,7 @@ struct MarkdownStylerTests {
     }
 
     @Test func tableMarkupIsHiddenButEscapedPipesAreText() {
-        let (storage, _) = styled("| **a** | x \\| y |\n|---|---|")
+        let (storage, _) = styled("| **a** | x \\| y |\n|---|---|", reveal: NSRange(location: 22, length: 0))
         #expect(isHidden(storage, at: 2) && isHidden(storage, at: 5))       // ** away from the caret
         #expect(isHidden(storage, at: 12))                                   // the escaping backslash
         #expect(mark(storage, at: 13) == nil && color(storage, at: 13) != .clear)
@@ -227,6 +232,88 @@ struct MarkdownStylerTests {
         }
         #expect(hasKerning(rows: 200))
         #expect(!hasKerning(rows: 201))
+    }
+
+    private func tableLine(_ storage: NSTextStorage, at index: Int) -> RenderedTable.Line? {
+        storage.attribute(.minoteTable, at: index, effectiveRange: nil) as? RenderedTable.Line
+    }
+
+    private func hasAttribute(_ key: NSAttributedString.Key, in storage: NSTextStorage) -> Bool {
+        var found = false
+        storage.enumerateAttribute(key, in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+            if value != nil { found = true; stop.pointee = true }
+        }
+        return found
+    }
+
+    /// A table nobody is editing is drawn in place of its rows: their text is
+    /// hidden and each source line is as tall as its part of the table.
+    @Test func anUneditedTableIsDrawnInPlaceOfItsRows() {
+        let text = "| **Name** | [Role](https://x.com) |\n|---|:-:|\n| Alice | Engineer |\n| Bob \\| Eve | `PM` |\n\nafter"
+        let (storage, sheet) = styled(text)
+        let string = text as NSString
+        let after = string.range(of: "after").location
+        for i in 0..<(after - 1) { #expect(isHidden(storage, at: i)) }
+        #expect(!isHidden(storage, at: after) && tableLine(storage, at: after) == nil)
+
+        var lineStarts: [Int] = []
+        string.enumerateSubstrings(in: NSRange(location: 0, length: after - 1), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
+            lineStarts.append(range.location)
+        }
+        let lines = lineStarts.compactMap { tableLine(storage, at: $0) }
+        #expect(lines.map(\.part) == [.row(0), .rule, .row(1), .row(2)])
+        guard let table = lines.first?.table else { return }
+        #expect(lines.allSatisfy { $0.table === table })
+        for (start, line) in zip(lineStarts, lines) {
+            let style = storage.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle
+            #expect(style?.maximumLineHeight == line.height && style?.minimumLineHeight == line.height)
+        }
+
+        // The cells show their text as styled, without the markup.
+        #expect(table.rows.map { $0.cells.map(\.string) } == [["Name", "Role"], ["Alice", "Engineer"], ["Bob | Eve", "PM"]])
+        let name = table.rows[0].cells[0], role = table.rows[0].cells[1]
+        #expect((name.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+        #expect(role.attribute(.underlineStyle, at: 0, effectiveRange: nil) != nil)
+        #expect(table.rows[2].cells[1].attribute(.backgroundColor, at: 0, effectiveRange: nil) as? NSColor == EditorPalette.standard.codeBackground)
+        #expect(table.width <= sheet.columnWidth)
+    }
+
+    /// The caret on any row shows the whole table as text.
+    @Test func editingAnyRowShowsTheWholeTableAsText() {
+        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+        for row in [0, 10, 20, 30] {
+            let (storage, _) = styled(text, reveal: NSRange(location: row + 2, length: 0))
+            #expect(!hasAttribute(.minoteTable, in: storage))
+            #expect(!isHidden(storage, at: 2) && !isHidden(storage, at: 32))
+        }
+        // So does a selection reaching into it.
+        let (selected, _) = styled("x\n" + text, reveal: NSRange(location: 0, length: 4))
+        #expect(!hasAttribute(.minoteTable, in: selected))
+    }
+
+    @Test func aTableWithoutADelimiterRowIsNeverDrawn() {
+        let (storage, _) = styled("| a | b |\n| c | d |")
+        #expect(!hasAttribute(.minoteTable, in: storage))
+        #expect(mark(storage, at: 0) == .tablePipe && !isHidden(storage, at: 2))
+    }
+
+    /// On a narrow page a long cell wraps inside its column, and its row grows.
+    @Test func aDrawnTableFitsThePageAndItsCellsWrap() {
+        let long = Array(repeating: "words", count: 30).joined(separator: " ")
+        let text = "| Ask | What |\n|---|---|\n| Short | \(long) |"
+        func table(width: CGFloat) -> RenderedTable? {
+            let (storage, _) = styled(text, width: width)
+            return tableLine(storage, at: 0)?.table
+        }
+        guard let wide = table(width: 4000), let narrow = table(width: 300) else {
+            Issue.record("no drawn table")
+            return
+        }
+        #expect(narrow.width <= 300)
+        #expect(wide.rows[1].height == wide.rows[0].height)            // one line each
+        #expect(narrow.rows[1].height > 3 * wide.rows[1].height)        // the long cell wraps
+        #expect(narrow.rows[0].height == wide.rows[0].height)           // the header still fits on a line
+        #expect(narrow.columnWidths[0] == wide.columnWidths[0])         // so does the short column
     }
 
     @Test func aTableInsideCodeIsCode() {

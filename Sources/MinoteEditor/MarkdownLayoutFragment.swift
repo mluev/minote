@@ -14,6 +14,9 @@ extension NSAttributedString.Key {
     public static let minoteLink = NSAttributedString.Key("MinoteLink")
     /// Set on text that Focus mode fades, so drawings fade with it.
     public static let minoteFaded = NSAttributedString.Key("MinoteFaded")
+    /// A line of a drawn table's hidden source: its part of the table, a
+    /// `RenderedTable.Line`, drawn in its place.
+    public static let minoteTable = NSAttributedString.Key("MinoteTable")
 }
 
 /// Drawn in place of markup characters (which stay in the text, invisible).
@@ -125,7 +128,8 @@ public final class MarkdownLayoutDelegate: NSObject, NSTextLayoutManagerDelegate
 }
 
 /// A paragraph's layout that also draws what its hidden markup stands for:
-/// bullets, task boxes, quote bars, rules, code boxes and table grids.
+/// bullets, task boxes, quote bars, rules, code boxes, table grids and
+/// drawn tables.
 public final class MarkdownLayoutFragment: NSTextLayoutFragment {
     var styleSheet: EditorStyleSheet?
 
@@ -149,7 +153,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         guard let string = paragraphString, string.length > 0 else { return false }
         let all = NSRange(location: 0, length: string.length)
         var found = false
-        for key in [NSAttributedString.Key.minoteMark, .minoteBlock] {
+        for key in [NSAttributedString.Key.minoteMark, .minoteBlock, .minoteTable] {
             string.enumerateAttribute(key, in: all) { value, _, stop in
                 if value != nil { found = true; stop.pointee = true }
             }
@@ -166,6 +170,14 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         let origin = CGPoint(x: point.x - layoutFragmentFrame.minX, y: point.y)
         let column = CGRect(x: origin.x + sheet.gutter, y: point.y,
                             width: max(0, containerWidth - 2 * sheet.gutter), height: layoutFragmentFrame.height)
+        if let table = string.attribute(.minoteTable, at: 0, effectiveRange: nil) as? RenderedTable.Line {
+            // Its source is hidden: the table is all there is to draw.
+            context.saveGState()
+            table.draw(at: CGPoint(x: column.minX, y: point.y), in: context,
+                       grid: cgColor(sheet.palette.rule), headerFill: cgColor(sheet.palette.codeBackground))
+            context.restoreGState()
+            return
+        }
         let block = string.length > 0 ? (string.attribute(.minoteBlock, at: 0, effectiveRange: nil) as? String).flatMap(MarkdownBlock.init(rawValue:)) : nil
         let faded = string.length > 0 && string.attribute(.minoteFaded, at: 0, effectiveRange: nil) != nil
 
