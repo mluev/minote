@@ -33,7 +33,8 @@ public final class MarkdownStyler {
     /// lays text out without our layout fragments.
     public var drawsTables = true
     /// The text column's real width (narrower than the style sheet's in a
-    /// narrow window): drawn tables are fitted to it.
+    /// narrow window): drawn tables are fitted to it, and a table being
+    /// edited lines up only if it fits.
     public var availableWidth: CGFloat {
         get { columnWidth ?? styleSheet.columnWidth }
         set { columnWidth = newValue }
@@ -161,7 +162,10 @@ public final class MarkdownStyler {
         /// Drawn as a table in place of its hidden rows: nobody is editing it.
         case drawn(RenderedTable)
         /// Rows as text over a grid, cells padded to line up: being edited.
-        case aligned
+        case aligned([[MarkdownTable.CellPadding]])
+        /// Rows as plain text: being edited, but too wide to line up (its rows
+        /// would wrap and scatter the grid).
+        case plain
         /// Each row draws its own part of the grid, columns not lined up: a
         /// table too long to restyle whole on every keystroke.
         case unaligned(startsTable: Bool)
@@ -226,11 +230,13 @@ public final class MarkdownStyler {
         switch tableMode(rows, in: storage, fences: fences) {
         case .drawn(let table):
             hide(rows, drawing: table, in: storage)
-        case .aligned:
+        case .aligned(let padding):
             drawGrid(rows, startsTable: true, in: storage)
-            alignColumns(rows, in: storage)
+            pad(rows, padding, in: storage)
         case .unaligned(let startsTable):
             drawGrid(rows, startsTable: startsTable, in: storage)
+        case .plain:
+            break
         }
     }
 
@@ -243,7 +249,8 @@ public final class MarkdownStyler {
         if drawsTables, !rows.contains(where: \.isRevealed), rows.count > 1, rows[1].isDelimiter, let table = renderedTable(rows, in: storage) {
             return .drawn(table)
         }
-        return .aligned
+        let alignment = alignment(of: rows, in: storage)
+        return alignment.width <= availableWidth ? .aligned(alignment.padding) : .plain
     }
 
     /// The table drawn for rows whose second is a delimiter row.
@@ -315,27 +322,34 @@ public final class MarkdownStyler {
         }
     }
 
-    /// Pads cells with kerning so that every column is as wide as its widest
-    /// cell, measured as styled: hidden markup takes no room, the caret's
-    /// revealed markup does. A cell's leading room goes after the pipe that
-    /// opens it, its trailing room after its last character.
-    private func alignColumns(_ rows: [TableRow], in storage: NSTextStorage) {
-        let string = storage.mutableString
+    /// The padding that makes every column as wide as its widest cell,
+    /// measured as styled (hidden markup takes no room, the caret's revealed
+    /// markup does), and how wide the rows then are.
+    private func alignment(of rows: [TableRow], in storage: NSTextStorage) -> (padding: [[MarkdownTable.CellPadding]], width: CGFloat) {
         let cells = rows.map { MarkdownTable.cells(of: $0.line, in: $0.chars) }
+        var lineWidths: [CGFloat] = []
         let widths = zip(rows, cells).map { row, cells in
             let line = CTLineCreateWithAttributedString(storage.attributedSubstring(from: NSRange(location: row.location, length: row.chars.count)))
+            lineWidths.append(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil) - CTLineGetTrailingWhitespaceWidth(line)))
             func x(_ index: Int) -> Double { Double(CTLineGetOffsetForStringIndex(line, index, nil)) }
             return cells.map { x($0.upperBound) - x($0.lowerBound) }
         }
         let alignments = rows.first(where: \.isDelimiter).map { MarkdownTable.alignments(delimiterRow: $0.line, in: $0.chars) } ?? []
         let padding = MarkdownTable.padding(widths: widths, alignments: alignments)
+        let width = zip(lineWidths, padding).map { line, pads in line + pads.reduce(0) { $0 + CGFloat($1.leading + $1.trailing) } }.max() ?? 0
+        return (padding, width)
+    }
 
+    /// Pads cells with kerning. A cell's leading room goes after the pipe
+    /// that opens it, its trailing room after its last character.
+    private func pad(_ rows: [TableRow], _ padding: [[MarkdownTable.CellPadding]], in storage: NSTextStorage) {
+        let string = storage.mutableString
         func kern(_ amount: Double, after index: Int) {
             guard amount > 0.01 else { return }
             storage.addAttribute(.kern, value: amount, range: string.rangeOfComposedCharacterSequence(at: index))
         }
-        for (row, (cells, padding)) in zip(rows, zip(cells, padding)) {
-            for (cell, pad) in zip(cells, padding) {
+        for (row, padding) in zip(rows, padding) {
+            for (cell, pad) in zip(MarkdownTable.cells(of: row.line, in: row.chars), padding) {
                 let pipe = row.location + cell.lowerBound - 1
                 if cell.isEmpty {
                     kern(pad.leading + pad.trailing, after: pipe)

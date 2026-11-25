@@ -291,6 +291,30 @@ struct MarkdownStylerTests {
         #expect(!hasAttribute(.minoteTable, in: selected))
     }
 
+    /// Lined up, a table too wide for the page would wrap its rows and
+    /// scatter the grid: while it's edited its rows are plain text instead.
+    @Test func editingATableTooWideToLineUpShowsItsRowsAsText() {
+        let long = Array(repeating: "words", count: 30).joined(separator: " ")
+        let text = "| Ask | What |\n|---|---|\n| **Short** | \(long) |"
+        let caret = NSRange(location: 2, length: 0)
+        let (storage, _) = styled(text, reveal: caret)
+        #expect(!hasAttribute(.minoteTable, in: storage))
+        #expect(!hasAttribute(.kern, in: storage))
+        #expect(!hasAttribute(.minoteBlock, in: storage))
+        #expect(!hasAttribute(.minoteMark, in: storage))
+        for pipe in [0, 6, 13, 15, 19, 23, 25, 37] {
+            #expect(color(storage, at: pipe) == EditorPalette.standard.syntax && !isHidden(storage, at: pipe))
+        }
+        #expect(color(storage, at: 16) == EditorPalette.standard.syntax)           // the delimiter row
+        #expect(isHidden(storage, at: 27))                                         // ** away from the caret
+        // The same table lines up on a page wide enough for it.
+        let (wide, _) = styled(text, reveal: caret, width: 4000)
+        #expect(mark(wide, at: 0) == .tablePipe && hasAttribute(.kern, in: wide))
+        // And a narrow table becomes text on a page narrower still.
+        let (narrow, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |", reveal: caret, width: 40)
+        #expect(mark(narrow, at: 0) == nil && color(narrow, at: 0) == EditorPalette.standard.syntax)
+    }
+
     @Test func aTableWithoutADelimiterRowIsNeverDrawn() {
         let (storage, _) = styled("| a | b |\n| c | d |")
         #expect(!hasAttribute(.minoteTable, in: storage))
