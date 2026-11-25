@@ -90,9 +90,10 @@ struct EditorTextEngineTests {
         #expect(markupSize() < 1)
     }
 
-    /// A table header's look depends on the row below it: only a table row
-    /// above an edited line is restyled with it.
-    @Test func onlyATableRowAboveTheEditIsRestyled() {
+    /// A table is restyled whole: its header's look depends on the row below
+    /// it, and its columns line up across all of its rows. A line beside an
+    /// edit that isn't part of a table is left alone.
+    @Test func anEditInATableRestylesTheWholeTable() {
         func isBold(_ storage: NSTextStorage, at index: Int) -> Bool {
             (storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) == true
         }
@@ -108,6 +109,18 @@ struct EditorTextEngineTests {
         text.replaceCharacters(in: NSRange(location: 6, length: 0), with: "x")      // typed at the start of the line below
         #expect(text.attribute(probe, at: 0, effectiveRange: nil) != nil)
         _ = prose
+    }
+
+    @Test func typingInOneRowRealignsTheOthers() {
+        let (engine, storage) = engine("| a | b |\n|---|---|\n| c | d |\n| e | f |\n\nafter")
+        engine.selectionDidChange(NSRange(location: 23, length: 0))
+        storage.replaceCharacters(in: NSRange(location: 23, length: 0), with: "wider")   // "| cwider | d |"
+        #expect(MarkdownStylerTests.lineUp(Array(MarkdownStylerTests.pipePositions(storage).prefix(4))))
+        // A row joins the table from the line below it.
+        let after = (storage.string as NSString).range(of: "after").location
+        storage.replaceCharacters(in: NSRange(location: after - 1, length: 0), with: "| a longer cell | g |")
+        #expect(MarkdownStylerTests.lineUp(Array(MarkdownStylerTests.pipePositions(storage).prefix(5))))
+        _ = engine
     }
 
     @Test func printingTurnsDrawingsIntoCharacters() {

@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import MinoteKit
 import Testing
 @testable import MinoteEditor
@@ -123,8 +124,98 @@ struct MarkdownStylerTests {
         #expect(mark(storage, at: 0) == .tablePipe)
         #expect(color(storage, at: 0) == .clear)
         #expect(font(storage, at: 2)?.fontDescriptor.symbolicTraits.contains(.bold) == true)  // header row
-        #expect(mark(storage, at: 11) == .tableRule)
         #expect(font(storage, at: 22)?.fontDescriptor.symbolicTraits.contains(.bold) != true)
+        // The delimiter row: invisible dashes that keep their width, pipes still lines.
+        #expect(color(storage, at: 11) == .clear && !isHidden(storage, at: 11))
+        #expect(mark(storage, at: 11) == nil && mark(storage, at: 14) == .tablePipe)
+    }
+
+    @Test func tableRowsDrawTheirPartOfTheGrid() {
+        let (storage, _) = styled("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nafter")
+        #expect(block(storage, at: 0) == .tableRow(top: true, bottom: false, header: true, delimiter: false))
+        #expect(block(storage, at: 10) == .tableRow(top: false, bottom: false, header: false, delimiter: true))
+        #expect(block(storage, at: 20) == .tableRow(top: false, bottom: true, header: false, delimiter: false))
+        #expect(block(storage, at: 30) == .tableRow(top: false, bottom: true, header: false, delimiter: false))
+        #expect(block(storage, at: 41) == nil)
+        #expect(MarkdownBlock(rawValue: MarkdownBlock.tableRow(top: true, bottom: false, header: true, delimiter: false).rawValue)
+            == .tableRow(top: true, bottom: false, header: true, delimiter: false))
+    }
+
+    /// Where each pipe's glyph of every row sits along its line, kerning
+    /// included. (Caret offsets won't do: they sit halfway through kerning.)
+    static func pipePositions(_ storage: NSTextStorage) -> [[Double]] {
+        var rows: [[Double]] = []
+        var location = 0
+        for contents in storage.string.components(separatedBy: "\n") {
+            let length = contents.utf16.count
+            let line = CTLineCreateWithAttributedString(storage.attributedSubstring(from: NSRange(location: location, length: length)))
+            var x: [Int: Double] = [:]
+            for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
+                let count = CTRunGetGlyphCount(run)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                var indices = [CFIndex](repeating: 0, count: count)
+                CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+                CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+                for (index, position) in zip(indices, positions) { x[index] = position.x }
+            }
+            rows.append(MarkdownLexer.lex(contents).tablePipes.map { x[$0] ?? -1 })
+            location += length + 1
+        }
+        return rows
+    }
+
+    static func lineUp(_ rows: [[Double]]) -> Bool {
+        rows.allSatisfy { row in row.count == rows[0].count && zip(row, rows[0]).allSatisfy { abs($0 - $1) < 0.01 } }
+    }
+
+    @Test(arguments: [EditorFontFamily.sfMono, .sfPro])
+    func tableColumnsLineUp(_ family: EditorFontFamily) {
+        let text = "| Name | **Role** | Score |\n|:-----|:-:|---:|\n| Alice Smith | Engineer | 42 |\n| Bob | [PM](https://x.com) | 1000 |"
+        let styler = MarkdownStyler(styleSheet: EditorStyleSheet(family: family, size: 18))
+        let storage = NSTextStorage(string: text)
+        styler.style(storage, range: NSRange(location: 0, length: storage.length), fences: FenceIndex(text: storage.mutableString))
+        let rows = Self.pipePositions(storage)
+        #expect(rows.count == 4 && rows[0].count == 4)
+        #expect(Self.lineUp(rows))
+        // The widest cell sets its column's width: nothing pads "Alice Smith".
+        #expect(storage.attribute(.kern, at: (text as NSString).range(of: "Smith ").upperBound - 1, effectiveRange: nil) == nil)
+    }
+
+    @Test func aTableRowUnderTheCaretStillLinesUp() {
+        let (storage, _) = styled("| **a** | b |\n| cc | d |", reveal: NSRange(location: 4, length: 0))
+        #expect(!isHidden(storage, at: 2))                // its ** show…
+        #expect(Self.lineUp(Self.pipePositions(storage))) // …and the other row makes room
+    }
+
+    @Test func tableMarkupIsHiddenButEscapedPipesAreText() {
+        let (storage, _) = styled("| **a** | x \\| y |\n|---|---|")
+        #expect(isHidden(storage, at: 2) && isHidden(storage, at: 5))       // ** away from the caret
+        #expect(isHidden(storage, at: 12))                                   // the escaping backslash
+        #expect(mark(storage, at: 13) == nil && color(storage, at: 13) != .clear)
+        #expect(font(storage, at: 13)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+    }
+
+    /// Lining up a table restyles all of it on every keystroke: a huge pasted
+    /// table keeps its grid but not its columns.
+    @Test func onlyTablesUpToTwoHundredRowsLineUp() {
+        func hasKerning(rows: Int) -> Bool {
+            let text = "| wide cell | b |\n" + String(repeating: "| a | b |\n", count: rows - 1)
+            let (storage, _) = styled(text)
+            var found = false
+            storage.enumerateAttribute(.kern, in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+                if value != nil { found = true; stop.pointee = true }
+            }
+            #expect(mark(storage, at: storage.length - 2) == .tablePipe)
+            return found
+        }
+        #expect(hasKerning(rows: 200))
+        #expect(!hasKerning(rows: 201))
+    }
+
+    @Test func aTableInsideCodeIsCode() {
+        let (storage, _) = styled("```\n| a |\n```")
+        #expect(mark(storage, at: 4) == nil)
+        #expect(block(storage, at: 4) == .code(top: false, bottom: false))
     }
 
     @Test func linksShowTheirTextAndCarryTheirTarget() {

@@ -139,12 +139,24 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
     /// becomes characters (•, ☐, ─) and code lines get a plain background.
     private static func replaceDrawnMarkup(in copy: NSTextStorage, styleSheet: EditorStyleSheet) {
         let all = NSRange(location: 0, length: copy.length)
-        copy.beginEditing()
-        copy.enumerateAttribute(.minoteBlock, in: all) { value, run, _ in
-            guard let raw = value as? String, case .code? = MarkdownBlock(rawValue: raw) else { return }
-            copy.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: run)
-        }
         let visible: [NSAttributedString.Key: Any] = [.font: styleSheet.fonts.regular, .foregroundColor: styleSheet.palette.listMarker]
+        copy.beginEditing()
+        var delimiterRows: [NSRange] = []
+        copy.enumerateAttribute(.minoteBlock, in: all) { value, run, _ in
+            switch (value as? String).flatMap(MarkdownBlock.init(rawValue:)) {
+            case .code?: copy.addAttribute(.backgroundColor, value: styleSheet.palette.codeBackground, range: run)
+            case .tableRow(_, _, _, delimiter: true)?: delimiterRows.append(run)
+            default: break
+            }
+        }
+        // A table's delimiter row: its dashes become the line drawn on screen.
+        let text = copy.mutableString
+        for row in delimiterRows {
+            for i in row.location..<NSMaxRange(row) where text.character(at: i) == 0x2D {
+                let attributes = copy.attributes(at: i, effectiveRange: nil).merging([.foregroundColor: styleSheet.palette.listMarker]) { $1 }
+                copy.replaceCharacters(in: NSRange(location: i, length: 1), with: NSAttributedString(string: "─", attributes: attributes))
+            }
+        }
         copy.enumerateAttribute(.minoteMark, in: all, options: .reverse) { value, run, _ in
             guard let raw = value as? String, let mark = MarkdownMark(rawValue: raw) else { return }
             let replacement: String
@@ -152,7 +164,6 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             case .bullet(let level): replacement = ["•", "◦", "▪"][level % 3]
             case .checkbox(let done): replacement = done ? "☑" : "☐"
             case .rule: replacement = String(repeating: "─", count: 24)
-            case .tableRule: replacement = String(repeating: "─", count: run.length)
             case .tablePipe:
                 copy.addAttributes(visible, range: run)
                 return
@@ -177,12 +188,6 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
             range = NSRange(location: 0, length: text.length)
         } else if let invalidated = fences.update(text, editedRange: editedRange, changeInLength: delta) {
             range = NSUnionRange(range, invalidated)
-        }
-        // A table header's look depends on the row below it.
-        let lineStart = text.lineRange(for: NSRange(location: range.location, length: 0)).location
-        if lineStart > 0 {
-            let above = text.lineRange(for: NSRange(location: lineStart - 1, length: 0))
-            if Self.isTableRow(above, in: text) { range = NSUnionRange(range, above) }
         }
         // The focus range and the revealed lines move, grow and shrink with
         // the typing, so the selection change that follows doesn't restyle
@@ -316,13 +321,6 @@ public final class EditorTextEngine: NSObject, @preconcurrency NSTextStorageDele
         guard configuration.rendersMarkdown, !configuration.preview, let storage, storage.length > 0 else { return nil }
         let text = storage.mutableString
         return MarkdownEditing.deleteMarkup(in: text, selection: selection, insideFence: isInsideFence(selection.location, in: text))
-    }
-
-    /// Whether a line starts with a table's `|`.
-    private static func isTableRow(_ line: NSRange, in text: NSString) -> Bool {
-        var i = line.location
-        while i < NSMaxRange(line), text.character(at: i) == 0x20 || text.character(at: i) == 0x09 { i += 1 }
-        return i < NSMaxRange(line) && text.character(at: i) == 0x7C
     }
 
     /// Whether the line at `location` is inside a fenced code block (fence lines included).

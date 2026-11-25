@@ -25,8 +25,6 @@ public enum MarkdownMark: Hashable, Sendable {
     case rule
     /// A `|` in a table: a thin vertical line.
     case tablePipe
-    /// The `|---|---|` row under a table header: a thin line.
-    case tableRule
 
     public var rawValue: String {
         switch self {
@@ -34,7 +32,6 @@ public enum MarkdownMark: Hashable, Sendable {
         case .checkbox(let done): done ? "box:x" : "box: "
         case .rule: "rule"
         case .tablePipe: "pipe"
-        case .tableRule: "tableRule"
         }
     }
 
@@ -44,7 +41,6 @@ public enum MarkdownMark: Hashable, Sendable {
         case "box: ": self = .checkbox(done: false)
         case "rule": self = .rule
         case "pipe": self = .tablePipe
-        case "tableRule": self = .tableRule
         default:
             guard rawValue.hasPrefix("bullet:"), let level = Int(rawValue.dropFirst(7)) else { return nil }
             self = .bullet(level: level)
@@ -58,11 +54,16 @@ public enum MarkdownBlock: Hashable, Sendable {
     case quote(depth: Int)
     /// Part of a code block's box; the first and last lines round its corners.
     case code(top: Bool, bottom: Bool)
+    /// A table row's part of the grid (its pipes draw the vertical lines):
+    /// a line above the table's first row and below each body row, a shaded
+    /// header, and a line through the delimiter row under it.
+    case tableRow(top: Bool, bottom: Bool, header: Bool, delimiter: Bool)
 
     public var rawValue: String {
         switch self {
         case .quote(let depth): "quote:\(depth)"
-        case .code(let top, let bottom): "code:\(top ? 1 : 0)\(bottom ? 1 : 0)"
+        case .code(let top, let bottom): "code:" + Self.bits(top, bottom)
+        case .tableRow(let top, let bottom, let header, let delimiter): "table:" + Self.bits(top, bottom, header, delimiter)
         }
     }
 
@@ -70,11 +71,18 @@ public enum MarkdownBlock: Hashable, Sendable {
         if rawValue.hasPrefix("quote:"), let depth = Int(rawValue.dropFirst(6)) {
             self = .quote(depth: depth)
         } else if rawValue.hasPrefix("code:"), rawValue.count == 7 {
-            let flags = Array(rawValue.dropFirst(5))
-            self = .code(top: flags[0] == "1", bottom: flags[1] == "1")
+            let flags = Array(rawValue.dropFirst(5)).map { $0 == "1" }
+            self = .code(top: flags[0], bottom: flags[1])
+        } else if rawValue.hasPrefix("table:"), rawValue.count == 10 {
+            let flags = Array(rawValue.dropFirst(6)).map { $0 == "1" }
+            self = .tableRow(top: flags[0], bottom: flags[1], header: flags[2], delimiter: flags[3])
         } else {
             return nil
         }
+    }
+
+    private static func bits(_ flags: Bool...) -> String {
+        String(flags.map { $0 ? "1" : "0" })
     }
 }
 
@@ -117,7 +125,7 @@ public final class MarkdownLayoutDelegate: NSObject, NSTextLayoutManagerDelegate
 }
 
 /// A paragraph's layout that also draws what its hidden markup stands for:
-/// bullets, task boxes, quote bars, rules, code boxes and table lines.
+/// bullets, task boxes, quote bars, rules, code boxes and table grids.
 public final class MarkdownLayoutFragment: NSTextLayoutFragment {
     var styleSheet: EditorStyleSheet?
 
@@ -161,9 +169,24 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         let block = string.length > 0 ? (string.attribute(.minoteBlock, at: 0, effectiveRange: nil) as? String).flatMap(MarkdownBlock.init(rawValue:)) : nil
         let faded = string.length > 0 && string.attribute(.minoteFaded, at: 0, effectiveRange: nil) != nil
 
+        let marks = marks()
+        /// The row's grid, in context coordinates.
+        var tableRow: CGRect?
+        if case .tableRow? = block, let span = tableRowSpan(marks) {
+            // Square with the pipes' lines.
+            let start = Self.lineX(point.x + span.lowerBound), end = Self.lineX(point.x + span.upperBound) + 1
+            tableRow = CGRect(x: start, y: point.y, width: end - start, height: layoutFragmentFrame.height)
+        }
+
         context.saveGState()
         if case .code(let top, let bottom)? = block {
             drawCodeBox(in: column, top: top, bottom: bottom, sheet: sheet, context: context)
+        }
+        if case .tableRow(let top, _, let header, let delimiter)? = block, let tableRow {
+            // The header's shade reaches down to the delimiter row's line.
+            context.setFillColor(cgColor(sheet.palette.codeBackground))
+            if header { context.fill(tableRow) }
+            if delimiter, !top { context.fill(tableRow.divided(atDistance: Self.midLine(tableRow) - tableRow.minY, from: .minYEdge).slice) }
         }
         context.restoreGState()
 
@@ -173,7 +196,14 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         if case .quote(let depth)? = block {
             drawQuoteBars(depth: depth, column: column, sheet: sheet, faded: faded, context: context)
         }
-        for mark in marks() {
+        if case .tableRow(let top, let bottom, _, let delimiter)? = block, let tableRow {
+            context.setFillColor(cgColor(sheet.palette.rule))
+            func line(at y: CGFloat) { context.fill(CGRect(x: tableRow.minX, y: y, width: tableRow.width, height: 1)) }
+            if top { line(at: tableRow.minY) }
+            if delimiter { line(at: Self.midLine(tableRow)) }
+            if bottom { line(at: tableRow.maxY - 1) }
+        }
+        for mark in marks {
             let rect = mark.rect.offsetBy(dx: point.x, dy: point.y)
             drawMark(mark, in: rect, line: mark.line.offsetBy(dx: point.x, dy: point.y), baseline: mark.baseline + point.y,
                      column: column, sheet: sheet, context: context)
@@ -200,20 +230,30 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
     func marks() -> [PlacedMark] {
         guard let string = paragraphString else { return [] }
         var result: [PlacedMark] = []
+        // Kerning is room between characters, and TextKit puts the caret
+        // (`locationForCharacter`) halfway through it: a mark's glyphs start
+        // and end half of it further in.
+        func kern(after index: Int) -> CGFloat {
+            index >= 0 ? (string.attribute(.kern, at: index, effectiveRange: nil) as? CGFloat) ?? 0 : 0
+        }
         for lineFragment in textLineFragments {
             let range = lineFragment.characterRange
             guard range.length > 0, NSMaxRange(range) <= string.length else { continue }
             let bounds = lineFragment.typographicBounds
             string.enumerateAttribute(.minoteMark, in: range) { value, run, _ in
                 guard let raw = value as? String, let kind = MarkdownMark(rawValue: raw) else { return }
-                let start = lineFragment.locationForCharacter(at: run.location).x
-                let end = lineFragment.locationForCharacter(at: NSMaxRange(run)).x
-                let rect = CGRect(x: bounds.minX + start, y: bounds.minY, width: max(0, end - start), height: bounds.height)
-                let faded = string.attribute(.minoteFaded, at: run.location, effectiveRange: nil) != nil
-                // The glyph origin is the baseline before the run's baseline offset moves it.
-                let offset = (string.attribute(.baselineOffset, at: run.location, effectiveRange: nil) as? CGFloat) ?? 0
-                let baseline = bounds.minY + lineFragment.glyphOrigin.y - offset
-                result.append(PlacedMark(kind: kind, rect: rect, line: bounds, baseline: baseline, faded: faded, characterOffset: run.location))
+                // Pipes side by side (an empty cell) are one run, but each is a line.
+                let pieces = kind == .tablePipe ? (run.location..<NSMaxRange(run)).map { NSRange(location: $0, length: 1) } : [run]
+                for piece in pieces {
+                    let start = lineFragment.locationForCharacter(at: piece.location).x + kern(after: piece.location - 1) / 2
+                    let end = lineFragment.locationForCharacter(at: NSMaxRange(piece)).x - kern(after: NSMaxRange(piece) - 1) / 2
+                    let rect = CGRect(x: bounds.minX + start, y: bounds.minY, width: max(0, end - start), height: bounds.height)
+                    let faded = string.attribute(.minoteFaded, at: piece.location, effectiveRange: nil) != nil
+                    // The glyph origin is the baseline before the run's baseline offset moves it.
+                    let offset = (string.attribute(.baselineOffset, at: piece.location, effectiveRange: nil) as? CGFloat) ?? 0
+                    let baseline = bounds.minY + lineFragment.glyphOrigin.y - offset
+                    result.append(PlacedMark(kind: kind, rect: rect, line: bounds, baseline: baseline, faded: faded, characterOffset: piece.location))
+                }
             }
         }
         return result
@@ -229,6 +269,38 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
         let size = sheet.checkboxSize
         let center = baseline - sheet.fonts.regular.capHeight / 2
         return CGRect(x: x, y: (center - size / 2).rounded(), width: size, height: size)
+    }
+
+    /// A table row's horizontal extent, in fragment coordinates: from its
+    /// first pipe's line to its last one's, or on to the end of its text when
+    /// the row doesn't close with a pipe.
+    private func tableRowSpan(_ marks: [PlacedMark]) -> ClosedRange<CGFloat>? {
+        let pipes = marks.filter { $0.kind == .tablePipe }
+        guard let first = pipes.first, let string = paragraphString else { return nil }
+        let start = pipes.map(\.rect.midX).min() ?? first.rect.midX
+        var end = pipes.map(\.rect.midX).max() ?? first.rect.midX
+        let text = string.string as NSString
+        let lastPipe = pipes.map(\.characterOffset).max() ?? 0
+        var textEnd = text.length
+        while textEnd > lastPipe + 1, let scalar = UnicodeScalar(text.character(at: textEnd - 1)),
+              CharacterSet.whitespacesAndNewlines.contains(scalar) { textEnd -= 1 }
+        if textEnd > lastPipe + 1,
+           let lineFragment = textLineFragments.first(where: { NSLocationInRange(textEnd - 1, $0.characterRange) }) {
+            // With its padding (see `marks()` on kerning and the caret).
+            let kern = (string.attribute(.kern, at: textEnd - 1, effectiveRange: nil) as? CGFloat) ?? 0
+            end = max(end, lineFragment.typographicBounds.minX + lineFragment.locationForCharacter(at: textEnd).x + kern / 2)
+        }
+        return start...end
+    }
+
+    /// Where a 1 pt line through `x` starts, on a whole point.
+    private static func lineX(_ x: CGFloat) -> CGFloat {
+        (x - 0.5).rounded()
+    }
+
+    /// Where a 1 pt line across the middle of `rect` starts.
+    private static func midLine(_ rect: CGRect) -> CGFloat {
+        (rect.midY - 0.5).rounded()
     }
 
     // MARK: Drawing
@@ -283,10 +355,7 @@ public final class MarkdownLayoutFragment: NSTextLayoutFragment {
             context.fill(CGRect(x: column.minX, y: (line.midY - 0.5).rounded(), width: column.width, height: 1))
         case .tablePipe:
             context.setFillColor(cgColor(sheet.palette.rule))
-            context.fill(CGRect(x: (rect.midX - 0.5).rounded(), y: line.minY, width: 1, height: line.height))
-        case .tableRule:
-            context.setFillColor(cgColor(sheet.palette.rule))
-            context.fill(CGRect(x: rect.minX, y: (line.midY - 0.5).rounded(), width: rect.width, height: 1))
+            context.fill(CGRect(x: Self.lineX(rect.midX), y: line.minY, width: 1, height: line.height))
         }
     }
 
