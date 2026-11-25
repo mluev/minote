@@ -128,6 +128,41 @@ struct MarkdownLexerTests {
         #expect(MarkdownTable.padding(widths: [[1, 1], [3, 3]], alignments: [.right])[0][1] == Pad(leading: 0, trailing: 2))
     }
 
+    @Test func aTableThatFitsKeepsItsNaturalColumns() {
+        #expect(MarkdownTable.fitColumns(natural: [100, 200], minimum: [50, 80], available: 400) == [100, 200])
+        #expect(MarkdownTable.fitColumns(natural: [100, 200], minimum: [50, 80], available: 300) == [100, 200])
+    }
+
+    /// Too wide: a short column keeps its width, the long ones wrap, sharing
+    /// what's left by how much each lacks, never below their longest word.
+    @Test func aWideTableIsFittedToThePage() {
+        let natural: [Double] = [100, 600, 500], minimum: [Double] = [60, 90, 80]
+        let widths = MarkdownTable.fitColumns(natural: natural, minimum: minimum, available: 600)
+        #expect(abs(widths.reduce(0, +) - 600) < 0.001)
+        #expect(widths[0] == 100)
+        #expect(widths[1] > minimum[1] && widths[2] > minimum[2])
+        #expect(widths[1] < natural[1] && widths[2] < natural[2])
+        #expect(abs((widths[1] - minimum[1]) / (widths[2] - minimum[2]) - 510.0 / 420.0) < 0.001)
+    }
+
+    @Test func oneLongWordDoesNotStarveTheOtherColumns() {
+        // A 900-point URL can't have its way: it breaks, and the prose column
+        // gets more than its longest word.
+        let widths = MarkdownTable.fitColumns(natural: [900, 800], minimum: [900, 60], available: 500)
+        #expect(abs(widths.reduce(0, +) - 500) < 0.001)
+        #expect(widths[0] < 900)
+        #expect(widths[1] > 2 * 60)
+    }
+
+    @Test func aFittedTableNeverOverflowsThePage() {
+        for available in [0.0, 30, 100, 250] {
+            let widths = MarkdownTable.fitColumns(natural: [300, 300, 40], minimum: [200, 200, 40], available: available)
+            #expect(widths.count == 3)
+            #expect(widths.reduce(0, +) <= available + 0.001)
+            #expect(widths.allSatisfy { $0 >= 0 })
+        }
+    }
+
     @Test func blankLines() {
         #expect(MarkdownLexer.lex("   ").kind == .blank)
         #expect(MarkdownLexer.lex("").kind == .blank)
