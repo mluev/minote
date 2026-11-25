@@ -8,7 +8,7 @@ import SwiftUI
 /// at all: clicks, the cursor and scrolling belong to the text.
 final class OutlineOverlayView: NSView {
     weak var controller: OutlineController?
-    private let host: PassiveHostingView<OutlineRailHost>
+    private let host: PassiveHostingView
     private var trackingArea: NSTrackingArea?
     private var accessibilityItems: [OutlineAccessibilityItem] = []
 
@@ -171,7 +171,7 @@ nonisolated private final class OutlineAccessibilityItem: NSAccessibilityElement
 
 /// Hosts SwiftUI that only draws: it takes no events and isn't in the
 /// accessibility tree (its container speaks for it).
-final class PassiveHostingView<Content: View>: NSHostingView<Content> {
+final class PassiveHostingView: NSHostingView<OutlineRailHost> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
     override func accessibilityChildren() -> [Any]? { [] }
