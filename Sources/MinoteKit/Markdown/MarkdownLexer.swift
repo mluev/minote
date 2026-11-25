@@ -15,6 +15,8 @@ public enum MarkdownStyle: UInt8, Sendable {
     case destination
     /// `==marked==` text.
     case highlight
+    /// A definition's name, `[label]:` or `[^label]:`: shown quietly.
+    case label
 }
 
 /// A styled range inside one line, in UTF-16 offsets (the unit of NSString).
@@ -43,6 +45,8 @@ public enum MarkdownLineKind: Equatable, Sendable {
     case thematicBreak
     case table
     case linkDefinition
+    /// `[^label]: text`: the text is ordinary inline text.
+    case footnoteDefinition
 }
 
 /// A list item's leading markup.
@@ -186,6 +190,7 @@ private struct LineLexer {
                 return line(.thematicBreak, contentStart: indentEnd, syntax: indentEnd..<count)
             }
             if chars[indentEnd] == .greaterThan { return blockquote(at: indentEnd) }
+            if let footnote = footnoteDefinition(at: indentEnd) { return footnote }
             if let definition = linkDefinition(at: indentEnd) { return definition }
             if MarkdownLexer.isTableRow(chars) { return tableRow(at: indentEnd) }
         }
@@ -316,12 +321,27 @@ private struct LineLexer {
         var urlEnd = urlStart
         while urlEnd < count, !chars[urlEnd].isWhitespace { urlEnd += 1 }
         spans.append(MarkdownSpan(start..<start + 1, .syntax))
-        spans.append(MarkdownSpan(start + 1..<i, .link))
+        spans.append(MarkdownSpan(start + 1..<i, .label))
         spans.append(MarkdownSpan(i..<i + 2, .syntax))
         spans.append(MarkdownSpan(urlStart..<urlEnd, .url))
         if urlEnd < count { spans.append(MarkdownSpan(urlEnd..<count, .syntax)) }
         links.append(MarkdownLink(urlStart..<urlEnd, .url(destination(urlStart..<urlEnd))))
         return MarkdownLine(kind: .linkDefinition, contentStart: start, spans: spans, links: links)
+    }
+
+    /// `[^label]: text`, the text styled like any other.
+    private mutating func footnoteDefinition(at start: Int) -> MarkdownLine? {
+        guard start + 2 < count, chars[start] == .openBracket, chars[start + 1] == .caret else { return nil }
+        var i = start + 2
+        while i < count, chars[i] != .closeBracket, chars[i] != .openBracket { i += 1 }
+        guard i < count, chars[i] == .closeBracket, i > start + 2,
+              i + 1 < count, chars[i + 1] == .colon else { return nil }
+        spans.append(MarkdownSpan(start..<start + 2, .syntax))
+        spans.append(MarkdownSpan(start + 2..<i, .label))
+        spans.append(MarkdownSpan(i..<i + 2, .syntax))
+        let contentStart = leadingWhitespaceEnd(from: i + 2)
+        parseInline(contentStart..<count)
+        return MarkdownLine(kind: .footnoteDefinition, contentStart: contentStart, spans: spans, links: links)
     }
 
     private mutating func tableRow(at start: Int) -> MarkdownLine {

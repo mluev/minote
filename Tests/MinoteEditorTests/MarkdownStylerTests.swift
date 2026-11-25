@@ -246,6 +246,23 @@ struct MarkdownStylerTests {
         #expect(storage.attribute(.minoteLink, at: 1, effectiveRange: nil) == nil)
     }
 
+    @Test func footnoteDefinitionsShowTheirTextAndAQuietLabel() {
+        let text = "[^1]: The footnote, *see* [site](https://x.com)."
+        let (storage, _) = styled(text)
+        #expect(isHidden(storage, at: 0) && isHidden(storage, at: 1))      // [^
+        #expect(color(storage, at: 2) == EditorPalette.standard.syntax)   // 1
+        #expect(isHidden(storage, at: 3) && isHidden(storage, at: 4))      // ]:
+        let body = (text as NSString).range(of: "The footnote")
+        for i in body.location..<NSMaxRange(body) { #expect(!isHidden(storage, at: i)) }
+        #expect(color(storage, at: body.location) == EditorPalette.standard.text)
+        #expect(font(storage, at: (text as NSString).range(of: "see").location)?.fontDescriptor.symbolicTraits.contains(.italic) == true)
+        #expect(storage.attribute(.underlineStyle, at: (text as NSString).range(of: "site").location, effectiveRange: nil) != nil)
+        // A link definition's label is just as quiet: no underline.
+        let (definition, _) = styled("[ref]: https://x.com")
+        #expect(color(definition, at: 1) == EditorPalette.standard.syntax)
+        #expect(definition.attribute(.underlineStyle, at: 1, effectiveRange: nil) == nil)
+    }
+
     @Test func codeBlocksHideFencesAndSitInABox() {
         let (storage, _) = styled("```\nlet x = 1\n\n```\nafter")
         #expect(isHidden(storage, at: 0))

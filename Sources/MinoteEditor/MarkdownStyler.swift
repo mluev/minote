@@ -49,6 +49,8 @@ public final class MarkdownStyler {
         /// Markup that disappears in rendered view.
         static let hidden = Flags(rawValue: 1 << 8)
         static let highlight = Flags(rawValue: 1 << 9)
+        /// A definition's name: shown quietly, like markup.
+        static let label = Flags(rawValue: 1 << 10)
     }
 
     /// Tables longer than this are styled line by line, their columns not
@@ -372,6 +374,7 @@ public final class MarkdownStyler {
             case .link: flag = .link
             case .destination: flag = .destination
             case .highlight: flag = .highlight
+            case .label: flag = .label
             }
             for i in span.range where i < flags.count { flags[i].insert(flag) }
         }
@@ -417,13 +420,6 @@ public final class MarkdownStyler {
         }
         if rendered, line.kind == .table {
             drawTablePipes(line, at: lineStart, in: storage)
-        }
-        if rendered, line.kind == .linkDefinition {
-            // A reference's label is a quiet name, not a link.
-            for span in line.spans where span.style == .link {
-                storage.removeAttribute(.underlineStyle, range: range(span.range))
-                storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: range(span.range))
-            }
         }
 
         if highlightsPartsOfSpeech {
@@ -493,7 +489,7 @@ public final class MarkdownStyler {
     /// Which inline markup shows around the caret: the formatted run it's in
     /// or touching (e.g. all of `**bold**`, or a whole link).
     private func revealedRange(around reveal: Range<Int>, flags: [Flags], from start: Int) -> Range<Int> {
-        let styled: Flags = [.syntax, .strong, .emphasis, .strikethrough, .code, .link, .destination, .url, .highlight]
+        let styled: Flags = [.syntax, .strong, .emphasis, .strikethrough, .code, .link, .destination, .url, .highlight, .label]
         func isStyled(_ i: Int) -> Bool {
             i >= start && i < flags.count && !flags[i].isDisjoint(with: styled)
         }
@@ -517,7 +513,7 @@ public final class MarkdownStyler {
         } else if strong || emphasis {
             storage.addAttribute(.font, value: styleSheet.fonts.font(strong: strong, emphasis: emphasis), range: range)
         }
-        if flags.contains(.syntax) || flags.contains(.destination) || (flags.contains(.url) && !rendered) {
+        if flags.contains(.syntax) || flags.contains(.destination) || flags.contains(.label) || (flags.contains(.url) && !rendered) {
             storage.addAttribute(.foregroundColor, value: styleSheet.palette.syntax, range: range)
         }
         if flags.contains(.strikethrough), !flags.contains(.syntax) {
@@ -573,7 +569,7 @@ public final class MarkdownStyler {
             guard let tag, let color = Self.color(for: tag) else { return true }
             let offset = utf16.distance(from: utf16.startIndex, to: range.lowerBound)
             let length = utf16.distance(from: range.lowerBound, to: range.upperBound)
-            let excluded: Flags = [.syntax, .url, .code, .hidden, .destination]
+            let excluded: Flags = [.syntax, .url, .code, .hidden, .destination, .label]
             guard offset + length <= flags.count, flags[offset].isDisjoint(with: excluded) else { return true }
             storage.addAttribute(.foregroundColor, value: color, range: NSRange(location: lineStart + offset, length: length))
             return true

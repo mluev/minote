@@ -211,7 +211,20 @@ struct MarkdownLexerTests {
     @Test func linkDefinitions() {
         let line = MarkdownLexer.lex("[1]: https://example.com \"Title\"")
         #expect(line.kind == .linkDefinition)
-        #expect(describe("[1]: https://example.com").contains("url(https://example.com)"))
+        #expect(describe("[1]: https://example.com") == ["syntax([)", "label(1)", "syntax(]:)", "url(https://example.com)"])
+    }
+
+    @Test func footnoteDefinitions() {
+        let line = MarkdownLexer.lex("[^1]: The footnote.")
+        #expect(line.kind == .footnoteDefinition)
+        #expect(line.contentStart == 6)
+        #expect(describe("[^1]: The footnote.") == ["syntax([^)", "label(1)", "syntax(]:)"])
+        // The text is inline text like any other.
+        #expect(describe("[^note]: See *this* [site](x.com).").contains("emphasis(this)"))
+        #expect(MarkdownLexer.lex("[^note]: [site](x.com)").links.map(\.target) == [.url("x.com")])
+        #expect(MarkdownLexer.lex("[^1]:").kind == .footnoteDefinition)
+        #expect(MarkdownLexer.lex("[^]: x").kind != .footnoteDefinition)
+        #expect(MarkdownLexer.lex("[^1] not a definition").kind == .paragraph)
     }
 
     @Test func emphasisInsideHeadingsAndLists() {
