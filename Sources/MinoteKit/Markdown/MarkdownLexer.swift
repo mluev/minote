@@ -88,6 +88,8 @@ public struct MarkdownLine: Equatable, Sendable {
     /// How many `>` a quote line starts with.
     public var quoteDepth: Int = 0
     public var links: [MarkdownLink] = []
+    /// A table row's cell borders: its `|` (not escaped, not in code).
+    public var tablePipes: [Int] = []
 }
 
 /// A fast, line-at-a-time Markdown lexer for styling text while it's typed.
@@ -122,6 +124,18 @@ public enum MarkdownLexer {
         if char == .backtick, rest.contains(.backtick) { return nil }
         let isBare = rest.allSatisfy { $0 == .space || $0 == .tab }
         return (char, length, isBare)
+    }
+
+    /// Whether a line is a table row: up to three columns of indentation, then `|`.
+    public static func isTableRow(_ chars: some Collection<UInt16>) -> Bool {
+        var columns = 0
+        for c in chars {
+            if c == .pipe { return true }
+            guard c == .space || c == .tab else { return false }
+            columns += c == .tab ? 4 - columns % 4 : 1
+            if columns > 3 { return false }
+        }
+        return false
     }
 
     /// `| --- | :-: |`: the row under a table's header.
@@ -171,7 +185,7 @@ private struct LineLexer {
             }
             if chars[indentEnd] == .greaterThan { return blockquote(at: indentEnd) }
             if let definition = linkDefinition(at: indentEnd) { return definition }
-            if chars[indentEnd] == .pipe { return tableRow(at: indentEnd) }
+            if MarkdownLexer.isTableRow(chars) { return tableRow(at: indentEnd) }
         }
         if let item = listItem(at: indentEnd) { return item }
 
@@ -310,13 +324,14 @@ private struct LineLexer {
 
     private mutating func tableRow(at start: Int) -> MarkdownLine {
         if MarkdownLexer.isTableDelimiterRow(chars[start...]) {
-            return line(.table, contentStart: start, syntax: start..<count)
+            var row = line(.table, contentStart: start, syntax: start..<count)
+            row.tablePipes = (start..<count).filter { chars[$0] == .pipe }
+            return row
         }
         parseInline(start..<count)
-        for i in start..<count where chars[i] == .pipe && !protected[i] {
-            spans.append(MarkdownSpan(i..<i + 1, .syntax))
-        }
-        return MarkdownLine(kind: .table, contentStart: start, spans: spans, links: links)
+        let pipes = (start..<count).filter { chars[$0] == .pipe && !protected[$0] }
+        for i in pipes { spans.append(MarkdownSpan(i..<i + 1, .syntax)) }
+        return MarkdownLine(kind: .table, contentStart: start, spans: spans, links: links, tablePipes: pipes)
     }
 
     // MARK: Inline

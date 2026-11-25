@@ -79,6 +79,55 @@ struct MarkdownLexerTests {
         #expect(describe("| *a* | b |").filter { $0 == "syntax(|)" }.count == 3)
     }
 
+    @Test("A table row is what the lexer lexes as one", arguments: [
+        "| a |", "   | a", "    | a", "\t| a", " \t| a", "a | b", "|", "", "  ", "> | a",
+    ])
+    func tableRowsAgreeWithTheLexer(line: String) {
+        #expect(MarkdownLexer.isTableRow(Array(line.utf16)) == (MarkdownLexer.lex(line).kind == .table))
+    }
+
+    @Test func tablePipesAreTheCellBorders() {
+        #expect(MarkdownLexer.lex("| a | b |").tablePipes == [0, 4, 8])
+        #expect(MarkdownLexer.lex("|:--|--:|").tablePipes == [0, 4, 8])
+        // An escaped pipe and one inside code are text.
+        #expect(MarkdownLexer.lex("| a \\| b | `x|y` |").tablePipes == [0, 9, 17])
+        #expect(MarkdownLexer.lex("a | b").tablePipes.isEmpty)
+    }
+
+    @Test func tableCells() {
+        func cells(_ row: String) -> [String] {
+            let chars = Array(row.utf16)
+            return MarkdownTable.cells(of: MarkdownLexer.lex(chars, insideFence: false), in: chars)
+                .map { String(decoding: chars[$0], as: UTF16.self) }
+        }
+        #expect(cells("| a | bb |") == [" a ", " bb "])
+        #expect(cells("| a || c |") == [" a ", "", " c "])
+        #expect(cells("| a | b") == [" a ", " b"])        // no closing pipe: the rest is a cell
+        #expect(cells("| a |   ") == [" a "])              // trailing spaces are not
+        #expect(cells("| a \\| b |") == [" a \\| b "])
+    }
+
+    @Test func tableAlignments() {
+        let row = "| :-- | :-: | --: | --- | : |"
+        let chars = Array(row.utf16)
+        #expect(MarkdownTable.alignments(delimiterRow: MarkdownLexer.lex(chars, insideFence: false), in: chars)
+            == [.left, .center, .right, .left, .left])
+    }
+
+    @Test func tablePaddingWidensEveryColumnToItsWidestCell() {
+        typealias Pad = MarkdownTable.CellPadding
+        let pads = MarkdownTable.padding(widths: [[10, 4, 6], [6, 8, 2], [3]], alignments: [.left, .right, .center])
+        #expect(pads[0] == [Pad(leading: 0, trailing: 0), Pad(leading: 4, trailing: 0), Pad(leading: 0, trailing: 0)])
+        #expect(pads[1] == [Pad(leading: 0, trailing: 4), Pad(leading: 0, trailing: 0), Pad(leading: 2, trailing: 2)])
+        #expect(pads[2] == [Pad(leading: 0, trailing: 7)])   // a short row pads the cells it has
+        // Every row's cells add up to the same widths.
+        let widths: [[Double]] = [[10, 4, 6], [6, 8, 2]]
+        let totals = zip(widths, pads).map { row, pad in zip(row, pad).map { $0 + $1.leading + $1.trailing } }
+        #expect(totals[0] == totals[1])
+        // Columns past the delimiter row's are left-aligned.
+        #expect(MarkdownTable.padding(widths: [[1, 1], [3, 3]], alignments: [.right])[0][1] == Pad(leading: 0, trailing: 2))
+    }
+
     @Test func blankLines() {
         #expect(MarkdownLexer.lex("   ").kind == .blank)
         #expect(MarkdownLexer.lex("").kind == .blank)
