@@ -28,6 +28,7 @@ import SwiftUI
 ///   chrome                    the front window's buttons, tab bar and sidebar: where they sit
 ///   pref <key> true|false|remove
 ///   scroll <y>
+///   windowsize <width> <height>   the front window's content size
 ///   outline                   the outline beside the page (Preview)
 ///   outlinehover <i|rail|off> move the pointer over a heading's dash or row, or away
 ///   outlineclick <i>          click a heading in the card (opening it first)
@@ -171,6 +172,10 @@ enum DebugDriver {
             guard let y = Double(rest) else { return "error" }
             textView.enclosingScrollView?.contentView.scroll(to: NSPoint(x: 0, y: y))
             textView.enclosingScrollView?.reflectScrolledClipView(textView.enclosingScrollView!.contentView)
+        case "windowsize":
+            // windowsize <width> <height>: the front window's content size.
+            guard words.count == 2, let width = Double(words[0]), let height = Double(words[1]) else { return "error: bad size" }
+            window.setContentSize(NSSize(width: width, height: height))
         case "appearance":
             NSApp.appearance = NSAppearance(named: rest == "dark" ? .darkAqua : .aqua)
         case "theme":

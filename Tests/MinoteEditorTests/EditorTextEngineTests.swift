@@ -90,13 +90,15 @@ struct EditorTextEngineTests {
         #expect(markupSize() < 1)
     }
 
-    /// A table header's look depends on the row below it: only a table row
-    /// above an edited line is restyled with it.
-    @Test func onlyATableRowAboveTheEditIsRestyled() {
+    /// A table is restyled whole: its header's look depends on the row below
+    /// it, and its columns line up across all of its rows. A line beside an
+    /// edit that isn't part of a table is left alone.
+    @Test func anEditInATableRestylesTheWholeTable() {
         func isBold(_ storage: NSTextStorage, at index: Int) -> Bool {
             (storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) == true
         }
         let (table, storage) = engine("| a |\n| b |")
+        table.selectionDidChange(NSRange(location: 8, length: 0))   // editing it: rows show as text
         #expect(!isBold(storage, at: 2))
         storage.replaceCharacters(in: NSRange(location: 8, length: 1), with: "-")   // "| - |": now a delimiter row
         #expect(isBold(storage, at: 2))
@@ -108,6 +110,56 @@ struct EditorTextEngineTests {
         text.replaceCharacters(in: NSRange(location: 6, length: 0), with: "x")      // typed at the start of the line below
         #expect(text.attribute(probe, at: 0, effectiveRange: nil) != nil)
         _ = prose
+    }
+
+    @Test func typingInOneRowRealignsTheOthers() {
+        let (engine, storage) = engine("| a | b |\n|---|---|\n| c | d |\n| e | f |\n\nafter")
+        engine.selectionDidChange(NSRange(location: 23, length: 0))
+        storage.replaceCharacters(in: NSRange(location: 23, length: 0), with: "wider")   // "| cwider | d |"
+        #expect(MarkdownStylerTests.lineUp(Array(MarkdownStylerTests.pipePositions(storage).prefix(4))))
+        // A row joins the table from the line below it.
+        let after = (storage.string as NSString).range(of: "after").location
+        storage.replaceCharacters(in: NSRange(location: after - 1, length: 0), with: "| a longer cell | g |")
+        #expect(MarkdownStylerTests.lineUp(Array(MarkdownStylerTests.pipePositions(storage).prefix(5))))
+        _ = engine
+    }
+
+    @Test func theCaretLeavingATableDrawsItAgain() {
+        let (engine, storage) = engine("text\n| a | b |\n|---|---|\n| c | d |\n\nafter")
+        func isDrawn() -> Bool { storage.attribute(.minoteTable, at: 5, effectiveRange: nil) != nil }
+        #expect(isDrawn())
+        engine.selectionDidChange(NSRange(location: 27, length: 0))
+        #expect(!isDrawn())
+        engine.selectionDidChange(NSRange(location: storage.length, length: 0))
+        #expect(isDrawn())
+    }
+
+    @Test func aNarrowerColumnRefitsTheTables() {
+        let long = Array(repeating: "words", count: 30).joined(separator: " ")
+        let (engine, storage) = engine("text\n| Ask | What |\n|---|---|\n| Short | \(long) |\n\nafter")
+        func table() -> RenderedTable? { (storage.attribute(.minoteTable, at: 5, effectiveRange: nil) as? RenderedTable.Line)?.table }
+        let probe = NSAttributedString.Key("Probe")
+        storage.addAttribute(probe, value: true, range: NSRange(location: 0, length: 4))
+        guard let wide = table() else { Issue.record("no drawn table"); return }
+        engine.setColumnWidth(300)
+        guard let narrow = table() else { Issue.record("no drawn table"); return }
+        #expect(wide.width > 300 && narrow.width <= 300)
+        #expect(narrow.rows[1].height > wide.rows[1].height)
+        #expect(storage.attribute(probe, at: 0, effectiveRange: nil) != nil)   // only the tables were restyled
+    }
+
+    /// Printing lays text out without our fragments: tables print as text.
+    @Test func printingKeepsATablesText() {
+        let (engine, storage) = engine("| Name | Role |\n|---|---|\n| Alice | Engineer |")
+        #expect(storage.attribute(.minoteTable, at: 0, effectiveRange: nil) != nil)
+        let copy = engine.printableCopy(columnWidth: 400)
+        #expect(copy.string.contains("Alice"))
+        let alice = (copy.string as NSString).range(of: "Alice").location
+        #expect(((copy.attribute(.font, at: alice, effectiveRange: nil) as? NSFont)?.pointSize ?? 0) > 1)
+        #expect(copy.attribute(.foregroundColor, at: alice, effectiveRange: nil) as? NSColor != .clear)
+        #expect(copy.attribute(.minoteTable, at: 0, effectiveRange: nil) == nil)
+        // The screen still draws it.
+        #expect(storage.attribute(.minoteTable, at: 0, effectiveRange: nil) != nil)
     }
 
     @Test func printingTurnsDrawingsIntoCharacters() {

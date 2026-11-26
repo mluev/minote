@@ -67,6 +67,7 @@ final class MobileEditorCoordinator: NSObject, UITextViewDelegate, NoteEditor {
         textView.delegate = self
         textView.onFormat = { [weak self] action in self?.perform(action) }
         textView.onOutdent = { [weak self] in self?.shift(outdent: true) }
+        textView.onColumnWidthChange = { [weak self] width in self?.engine.setColumnWidth(width) }
         engine.isComposing = { [weak textView] in textView?.markedTextRange != nil }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
@@ -358,6 +359,10 @@ final class MobileTextView: UITextView {
     var typewriter = false
     var onFormat: ((FormatAction) -> Void)?
     var onOutdent: (() -> Void)?
+    /// Called when the text column's width changes (rotation, Split View,
+    /// another font): tables are fitted to it.
+    var onColumnWidthChange: ((CGFloat) -> Void)?
+    private var reportedColumnWidth: CGFloat?
 
     func setUp(styleSheet: EditorStyleSheet) {
         backgroundColor = EditorPalette.standard.background
@@ -395,6 +400,11 @@ final class MobileTextView: UITextView {
         let bottom = typewriter ? visible / 2 : visible * 0.4
         let insets = UIEdgeInsets(top: top.rounded(), left: horizontal, bottom: bottom.rounded(), right: horizontal)
         if textContainerInset != insets { textContainerInset = insets }
+        let column = min(styleSheet.columnWidth, width - 2 * horizontal - 2 * styleSheet.gutter)
+        if let onColumnWidthChange, column > 0, column != reportedColumnWidth {
+            reportedColumnWidth = column
+            onColumnWidthChange(column)
+        }
     }
 
     // MARK: Caret

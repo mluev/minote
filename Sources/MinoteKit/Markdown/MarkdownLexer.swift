@@ -13,6 +13,10 @@ public enum MarkdownStyle: UInt8, Sendable {
     case url
     /// Where a `[text](…)` link or image points: markup, hidden in rendered view.
     case destination
+    /// `==marked==` text.
+    case highlight
+    /// A definition's name, `[label]:` or `[^label]:`: shown quietly.
+    case label
 }
 
 /// A styled range inside one line, in UTF-16 offsets (the unit of NSString).
@@ -41,6 +45,8 @@ public enum MarkdownLineKind: Equatable, Sendable {
     case thematicBreak
     case table
     case linkDefinition
+    /// `[^label]: text`: the text is ordinary inline text.
+    case footnoteDefinition
 }
 
 /// A list item's leading markup.
@@ -88,6 +94,8 @@ public struct MarkdownLine: Equatable, Sendable {
     /// How many `>` a quote line starts with.
     public var quoteDepth: Int = 0
     public var links: [MarkdownLink] = []
+    /// A table row's cell borders: its `|` (not escaped, not in code).
+    public var tablePipes: [Int] = []
 }
 
 /// A fast, line-at-a-time Markdown lexer for styling text while it's typed.
@@ -122,6 +130,18 @@ public enum MarkdownLexer {
         if char == .backtick, rest.contains(.backtick) { return nil }
         let isBare = rest.allSatisfy { $0 == .space || $0 == .tab }
         return (char, length, isBare)
+    }
+
+    /// Whether a line is a table row: up to three columns of indentation, then `|`.
+    public static func isTableRow(_ chars: some Collection<UInt16>) -> Bool {
+        var columns = 0
+        for c in chars {
+            if c == .pipe { return true }
+            guard c == .space || c == .tab else { return false }
+            columns += c == .tab ? 4 - columns % 4 : 1
+            if columns > 3 { return false }
+        }
+        return false
     }
 
     /// `| --- | :-: |`: the row under a table's header.
@@ -170,8 +190,9 @@ private struct LineLexer {
                 return line(.thematicBreak, contentStart: indentEnd, syntax: indentEnd..<count)
             }
             if chars[indentEnd] == .greaterThan { return blockquote(at: indentEnd) }
+            if let footnote = footnoteDefinition(at: indentEnd) { return footnote }
             if let definition = linkDefinition(at: indentEnd) { return definition }
-            if chars[indentEnd] == .pipe { return tableRow(at: indentEnd) }
+            if MarkdownLexer.isTableRow(chars) { return tableRow(at: indentEnd) }
         }
         if let item = listItem(at: indentEnd) { return item }
 
@@ -300,7 +321,7 @@ private struct LineLexer {
         var urlEnd = urlStart
         while urlEnd < count, !chars[urlEnd].isWhitespace { urlEnd += 1 }
         spans.append(MarkdownSpan(start..<start + 1, .syntax))
-        spans.append(MarkdownSpan(start + 1..<i, .link))
+        spans.append(MarkdownSpan(start + 1..<i, .label))
         spans.append(MarkdownSpan(i..<i + 2, .syntax))
         spans.append(MarkdownSpan(urlStart..<urlEnd, .url))
         if urlEnd < count { spans.append(MarkdownSpan(urlEnd..<count, .syntax)) }
@@ -308,15 +329,31 @@ private struct LineLexer {
         return MarkdownLine(kind: .linkDefinition, contentStart: start, spans: spans, links: links)
     }
 
+    /// `[^label]: text`, the text styled like any other.
+    private mutating func footnoteDefinition(at start: Int) -> MarkdownLine? {
+        guard start + 2 < count, chars[start] == .openBracket, chars[start + 1] == .caret else { return nil }
+        var i = start + 2
+        while i < count, chars[i] != .closeBracket, chars[i] != .openBracket { i += 1 }
+        guard i < count, chars[i] == .closeBracket, i > start + 2,
+              i + 1 < count, chars[i + 1] == .colon else { return nil }
+        spans.append(MarkdownSpan(start..<start + 2, .syntax))
+        spans.append(MarkdownSpan(start + 2..<i, .label))
+        spans.append(MarkdownSpan(i..<i + 2, .syntax))
+        let contentStart = leadingWhitespaceEnd(from: i + 2)
+        parseInline(contentStart..<count)
+        return MarkdownLine(kind: .footnoteDefinition, contentStart: contentStart, spans: spans, links: links)
+    }
+
     private mutating func tableRow(at start: Int) -> MarkdownLine {
         if MarkdownLexer.isTableDelimiterRow(chars[start...]) {
-            return line(.table, contentStart: start, syntax: start..<count)
+            var row = line(.table, contentStart: start, syntax: start..<count)
+            row.tablePipes = (start..<count).filter { chars[$0] == .pipe }
+            return row
         }
         parseInline(start..<count)
-        for i in start..<count where chars[i] == .pipe && !protected[i] {
-            spans.append(MarkdownSpan(i..<i + 1, .syntax))
-        }
-        return MarkdownLine(kind: .table, contentStart: start, spans: spans, links: links)
+        let pipes = (start..<count).filter { chars[$0] == .pipe && !protected[$0] }
+        for i in pipes { spans.append(MarkdownSpan(i..<i + 1, .syntax)) }
+        return MarkdownLine(kind: .table, contentStart: start, spans: spans, links: links, tablePipes: pipes)
     }
 
     // MARK: Inline
@@ -519,7 +556,7 @@ private struct LineLexer {
 
     private static let urlPrefixes: [[UInt16]] = ["https://", "http://", "www."].map { Array($0.utf16) }
 
-    // MARK: Emphasis (CommonMark "process emphasis", plus GFM strikethrough)
+    // MARK: Emphasis (CommonMark "process emphasis", plus GFM strikethrough and ==highlight==)
 
     private struct Delimiter {
         var position: Int
@@ -535,7 +572,7 @@ private struct LineLexer {
         var i = range.lowerBound
         while i < range.upperBound {
             let c = chars[i]
-            guard !protected[i], c == .asterisk || c == .underscore || c == .tilde else {
+            guard !protected[i], c == .asterisk || c == .underscore || c == .tilde || c == .equals else {
                 i += 1
                 continue
             }
@@ -556,7 +593,8 @@ private struct LineLexer {
                 canClose = rightFlanking
             }
             let length = end - i
-            if c != .tilde || length <= 2 {
+            // `~` and `~~` strike through; only `==` highlights.
+            if c == .tilde ? length <= 2 : c == .equals ? length == 2 : true {
                 delimiters.append(Delimiter(position: i, char: c, length: length, originalLength: length, canOpen: canOpen, canClose: canClose))
             }
             i = end
@@ -568,9 +606,9 @@ private struct LineLexer {
         // for an opener may stop because nothing below can match. Together they
         // keep long lines full of `*` and `_` (pasted data, minified code) linear.
         var previous = Array(-1..<(delimiters.count - 1))
-        var bottoms = [Int](repeating: -1, count: 18)
+        var bottoms = [Int](repeating: -1, count: 24)
         func bottomKey(_ closer: Delimiter) -> Int {
-            let kind = closer.char == .asterisk ? 0 : closer.char == .underscore ? 1 : 2
+            let kind = closer.char == .asterisk ? 0 : closer.char == .underscore ? 1 : closer.char == .tilde ? 2 : 3
             return kind * 6 + (closer.canOpen ? 3 : 0) + closer.originalLength % 3
         }
 
@@ -587,7 +625,7 @@ private struct LineLexer {
             while openerIndex > bottoms[key] {
                 let opener = delimiters[openerIndex]
                 if opener.char == closer.char, opener.canOpen, opener.length > 0 {
-                    if closer.char == .tilde {
+                    if closer.char == .tilde || closer.char == .equals {
                         if opener.length == closer.length {
                             match = openerIndex
                             break
@@ -618,9 +656,9 @@ private struct LineLexer {
             var current = closer
             let use: Int
             let style: MarkdownStyle
-            if current.char == .tilde {
+            if current.char == .tilde || current.char == .equals {
                 use = current.length
-                style = .strikethrough
+                style = current.char == .tilde ? .strikethrough : .highlight
             } else {
                 use = opener.length >= 2 && current.length >= 2 ? 2 : 1
                 style = use == 2 ? .strong : .emphasis
@@ -691,6 +729,7 @@ extension UInt16 {
     static let period: UInt16 = 0x2E
     static let colon: UInt16 = 0x3A
     static let lessThan: UInt16 = 0x3C
+    static let equals: UInt16 = 0x3D
     static let greaterThan: UInt16 = 0x3E
     static let at: UInt16 = 0x40
     static let uppercaseX: UInt16 = 0x58

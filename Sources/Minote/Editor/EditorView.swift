@@ -99,6 +99,9 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textView.onFocusChange = { [weak self] focused in
             self?.tab?.isEditorFocused = focused
         }
+        textView.onColumnWidthChange = { [weak self] width in
+            self?.engine.setColumnWidth(width)
+        }
 
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -276,7 +279,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         let width = info.paperSize.width - info.leftMargin - info.rightMargin
 
         // A TextKit 1 view paginates reliably when printing.
-        let printStorage = NSTextStorage(attributedString: engine.printableCopy())
+        let printStorage = NSTextStorage(attributedString: engine.printableCopy(columnWidth: width - 2 * gutter))
         let layoutManager = NSLayoutManager()
         printStorage.addLayoutManager(layoutManager)
         let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))

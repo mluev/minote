@@ -79,6 +79,90 @@ struct MarkdownLexerTests {
         #expect(describe("| *a* | b |").filter { $0 == "syntax(|)" }.count == 3)
     }
 
+    @Test("A table row is what the lexer lexes as one", arguments: [
+        "| a |", "   | a", "    | a", "\t| a", " \t| a", "a | b", "|", "", "  ", "> | a",
+    ])
+    func tableRowsAgreeWithTheLexer(line: String) {
+        #expect(MarkdownLexer.isTableRow(Array(line.utf16)) == (MarkdownLexer.lex(line).kind == .table))
+    }
+
+    @Test func tablePipesAreTheCellBorders() {
+        #expect(MarkdownLexer.lex("| a | b |").tablePipes == [0, 4, 8])
+        #expect(MarkdownLexer.lex("|:--|--:|").tablePipes == [0, 4, 8])
+        // An escaped pipe and one inside code are text.
+        #expect(MarkdownLexer.lex("| a \\| b | `x|y` |").tablePipes == [0, 9, 17])
+        #expect(MarkdownLexer.lex("a | b").tablePipes.isEmpty)
+    }
+
+    @Test func tableCells() {
+        func cells(_ row: String) -> [String] {
+            let chars = Array(row.utf16)
+            return MarkdownTable.cells(of: MarkdownLexer.lex(chars, insideFence: false), in: chars)
+                .map { String(decoding: chars[$0], as: UTF16.self) }
+        }
+        #expect(cells("| a | bb |") == [" a ", " bb "])
+        #expect(cells("| a || c |") == [" a ", "", " c "])
+        #expect(cells("| a | b") == [" a ", " b"])        // no closing pipe: the rest is a cell
+        #expect(cells("| a |   ") == [" a "])              // trailing spaces are not
+        #expect(cells("| a \\| b |") == [" a \\| b "])
+    }
+
+    @Test func tableAlignments() {
+        let row = "| :-- | :-: | --: | --- | : |"
+        let chars = Array(row.utf16)
+        #expect(MarkdownTable.alignments(delimiterRow: MarkdownLexer.lex(chars, insideFence: false), in: chars)
+            == [.left, .center, .right, .left, .left])
+    }
+
+    @Test func tablePaddingWidensEveryColumnToItsWidestCell() {
+        typealias Pad = MarkdownTable.CellPadding
+        let pads = MarkdownTable.padding(widths: [[10, 4, 6], [6, 8, 2], [3]], alignments: [.left, .right, .center])
+        #expect(pads[0] == [Pad(leading: 0, trailing: 0), Pad(leading: 4, trailing: 0), Pad(leading: 0, trailing: 0)])
+        #expect(pads[1] == [Pad(leading: 0, trailing: 4), Pad(leading: 0, trailing: 0), Pad(leading: 2, trailing: 2)])
+        #expect(pads[2] == [Pad(leading: 0, trailing: 7)])   // a short row pads the cells it has
+        // Every row's cells add up to the same widths.
+        let widths: [[Double]] = [[10, 4, 6], [6, 8, 2]]
+        let totals = zip(widths, pads).map { row, pad in zip(row, pad).map { $0 + $1.leading + $1.trailing } }
+        #expect(totals[0] == totals[1])
+        // Columns past the delimiter row's are left-aligned.
+        #expect(MarkdownTable.padding(widths: [[1, 1], [3, 3]], alignments: [.right])[0][1] == Pad(leading: 0, trailing: 2))
+    }
+
+    @Test func aTableThatFitsKeepsItsNaturalColumns() {
+        #expect(MarkdownTable.fitColumns(natural: [100, 200], minimum: [50, 80], available: 400) == [100, 200])
+        #expect(MarkdownTable.fitColumns(natural: [100, 200], minimum: [50, 80], available: 300) == [100, 200])
+    }
+
+    /// Too wide: a short column keeps its width, the long ones wrap, sharing
+    /// what's left by how much each lacks, never below their longest word.
+    @Test func aWideTableIsFittedToThePage() {
+        let natural: [Double] = [100, 600, 500], minimum: [Double] = [60, 90, 80]
+        let widths = MarkdownTable.fitColumns(natural: natural, minimum: minimum, available: 600)
+        #expect(abs(widths.reduce(0, +) - 600) < 0.001)
+        #expect(widths[0] == 100)
+        #expect(widths[1] > minimum[1] && widths[2] > minimum[2])
+        #expect(widths[1] < natural[1] && widths[2] < natural[2])
+        #expect(abs((widths[1] - minimum[1]) / (widths[2] - minimum[2]) - 510.0 / 420.0) < 0.001)
+    }
+
+    @Test func oneLongWordDoesNotStarveTheOtherColumns() {
+        // A 900-point URL can't have its way: it breaks, and the prose column
+        // gets more than its longest word.
+        let widths = MarkdownTable.fitColumns(natural: [900, 800], minimum: [900, 60], available: 500)
+        #expect(abs(widths.reduce(0, +) - 500) < 0.001)
+        #expect(widths[0] < 900)
+        #expect(widths[1] > 2 * 60)
+    }
+
+    @Test func aFittedTableNeverOverflowsThePage() {
+        for available in [0.0, 30, 100, 250] {
+            let widths = MarkdownTable.fitColumns(natural: [300, 300, 40], minimum: [200, 200, 40], available: available)
+            #expect(widths.count == 3)
+            #expect(widths.reduce(0, +) <= available + 0.001)
+            #expect(widths.allSatisfy { $0 >= 0 })
+        }
+    }
+
     @Test func blankLines() {
         #expect(MarkdownLexer.lex("   ").kind == .blank)
         #expect(MarkdownLexer.lex("").kind == .blank)
@@ -92,6 +176,12 @@ struct MarkdownLexerTests {
         ("**strong**", ["syntax(**)", "strong(strong)", "syntax(**)"]),
         ("__strong__", ["syntax(__)", "strong(strong)", "syntax(__)"]),
         ("~~gone~~", ["syntax(~~)", "strikethrough(gone)", "syntax(~~)"]),
+        ("==marked==", ["syntax(==)", "highlight(marked)", "syntax(==)"]),
+        ("a ==b **c**== d", ["syntax(==)", "highlight(b **c**)", "syntax(**)", "strong(c)", "syntax(**)", "syntax(==)"]),
+        ("=one=", []),
+        ("===three===", []),
+        ("==unequal===", []),
+        ("x == y == z", []),
         ("snake_case_name", []),
         ("2 * 3 * 4", []),
         ("* not emphasis*", ["syntax(* )"]),
@@ -108,6 +198,8 @@ struct MarkdownLexerTests {
             String(repeating: "a* ", count: 20_000),
             String(repeating: "*a ", count: 20_000),
             String(repeating: "_x *y ", count: 10_000) + String(repeating: "z* ", count: 10_000),
+            String(repeating: "a== ", count: 20_000),
+            String(repeating: "==a ~~b ", count: 10_000) + String(repeating: "c== ", count: 10_000),
         ]
         let clock = ContinuousClock()
         let elapsed = clock.measure {
@@ -154,7 +246,20 @@ struct MarkdownLexerTests {
     @Test func linkDefinitions() {
         let line = MarkdownLexer.lex("[1]: https://example.com \"Title\"")
         #expect(line.kind == .linkDefinition)
-        #expect(describe("[1]: https://example.com").contains("url(https://example.com)"))
+        #expect(describe("[1]: https://example.com") == ["syntax([)", "label(1)", "syntax(]:)", "url(https://example.com)"])
+    }
+
+    @Test func footnoteDefinitions() {
+        let line = MarkdownLexer.lex("[^1]: The footnote.")
+        #expect(line.kind == .footnoteDefinition)
+        #expect(line.contentStart == 6)
+        #expect(describe("[^1]: The footnote.") == ["syntax([^)", "label(1)", "syntax(]:)"])
+        // The text is inline text like any other.
+        #expect(describe("[^note]: See *this* [site](x.com).").contains("emphasis(this)"))
+        #expect(MarkdownLexer.lex("[^note]: [site](x.com)").links.map(\.target) == [.url("x.com")])
+        #expect(MarkdownLexer.lex("[^1]:").kind == .footnoteDefinition)
+        #expect(MarkdownLexer.lex("[^]: x").kind != .footnoteDefinition)
+        #expect(MarkdownLexer.lex("[^1] not a definition").kind == .paragraph)
     }
 
     @Test func emphasisInsideHeadingsAndLists() {
