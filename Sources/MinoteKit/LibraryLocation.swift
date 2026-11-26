@@ -72,6 +72,19 @@ public enum LibraryLocation {
         try manager.createDirectory(at: destination, withIntermediateDirectories: true)
         var report = NoteMoveReport()
         var files = noteFiles(in: source)
+
+        // Locked notes need their password to come along. A folder already
+        // locked with another one would hold notes no single password opens.
+        let sourceVault = source.appendingPathComponent(VaultRecord.fileName, isDirectory: false)
+        let destinationVault = destination.appendingPathComponent(VaultRecord.fileName, isDirectory: false)
+        let movesVault = manager.fileExists(atPath: sourceVault.path)
+        if movesVault, manager.fileExists(atPath: destinationVault.path) {
+            let ours = try? VaultRecord.decode(Data(contentsOf: sourceVault))
+            let theirs = try? VaultRecord.decode(Data(contentsOf: destinationVault))
+            if ours?.key.keyID != theirs?.key.keyID, files.contains(where: NoteNaming.isLockedFile) {
+                throw LockError.differentPasswords
+            }
+        }
         let pending = files.filter { !isDownloaded($0) }
         if !pending.isEmpty {
             for file in pending { try? manager.startDownloadingUbiquitousItem(at: file) }
@@ -100,6 +113,20 @@ public enum LibraryLocation {
                 }
             } catch {
                 report.leftBehind.append(file.lastPathComponent)
+                report.firstError = report.firstError ?? error.localizedDescription
+            }
+        }
+        if movesVault, !manager.fileExists(atPath: destinationVault.path) {
+            do {
+                if intoICloud {
+                    try manager.setUbiquitous(true, itemAt: sourceVault, destinationURL: destinationVault)
+                } else if manager.isUbiquitousItem(at: sourceVault) {
+                    try manager.setUbiquitous(false, itemAt: sourceVault, destinationURL: destinationVault)
+                } else {
+                    try manager.moveItem(at: sourceVault, to: destinationVault)
+                }
+            } catch {
+                // The notes carry their own password records; the vault is rebuilt from them.
                 report.firstError = report.firstError ?? error.localizedDescription
             }
         }

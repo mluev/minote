@@ -26,8 +26,13 @@ struct TabBar: View {
             }
             TabStrip(page: page, workspace: workspace, state: state, palette: palette, showsTabs: showsTabs)
                 .padding(.leading, TabMetrics.stripInset)
+            // Library windows only: a file opened from Finder has nothing to lock.
+            if state.isSidebarVisible || state.tabs.contains(where: \.isLibraryTab) {
+                LockButton(workspace: workspace, state: state, palette: palette)
+                    .padding(.leading, 6)
+            }
             TextSettingsButton(windowState: state, palette: palette)
-                .padding(.leading, 6)
+                .padding(.leading, 2)
                 .padding(.trailing, 10)
         }
         .frame(height: TitlebarLayout.height)
@@ -245,6 +250,15 @@ private struct TabStrip: View {
         }
         Button("Move Tab to New Window") { workspace.moveToNewWindow(tab) }
             .disabled(page.tabs.count < 2)
+        if tab.isLibraryTab, let note = tab.note, !note.isBlankDraft {
+            Divider()
+            if note.isLocked {
+                Button("Remove Lock") { workspace.removeLock(note.id) }
+                    .disabled(note.isSealed || workspace.library.lockScope == .library)
+            } else {
+                Button("Lock Note") { workspace.lockNote(note.id, in: state) }
+            }
+        }
         Divider()
         Button("Show in Finder") {
             if let url = tab.file?.url ?? tab.note?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }

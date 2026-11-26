@@ -61,10 +61,13 @@ final class FakeEditor: NoteEditor {
     var caretOffset = 0
     var reloadCount = 0
     var focusCount = 0
+    /// Showing a sealed note: an empty, read-only page.
+    var isShowingSealed = false
 
     func display(_ note: Note?) {
         displayedNoteID = note?.id
         text = note?.text ?? ""
+        isShowingSealed = note?.isSealed == true
         caretOffset = 0
     }
 

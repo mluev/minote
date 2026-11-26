@@ -44,6 +44,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     private(set) var displayedNoteID: Note.ID?
     private var undoManagers: [Note.ID: UndoManager] = [:]
+    /// The note in the print sheet, while it's open (see `endPrintSheet`).
+    private var printingNoteID: Note.ID?
     /// Notes shown in this window, most recent first. Only the latest few
     /// keep their undo history: each holds every piece of text it replaced.
     private var recentlyShown: [Note.ID] = []
@@ -51,6 +53,9 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     private var viewStates: [Note.ID: (selection: NSRange, scroll: NSPoint)] = [:]
     /// True while we replace the text ourselves (not a user edit).
     private var isReplacingText = false
+    /// Showing a sealed note: an empty page nothing can be typed into (the
+    /// tab shows its locked panel instead). The tab keeps its note.
+    private(set) var isSealedDisplay = false
     private var statisticsTask: Task<Void, Never>?
     /// Bumped whenever the text changes, so the counter can tell a caret move
     /// over the same text (nothing to recount) from an edit.
@@ -114,7 +119,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         outline.moveCaret = { [weak self] location in self?.moveHiddenCaret(to: location) }
         outline.isTypewriter = { [weak self] in self?.configuration.typewriter ?? false }
         outline.bottomReserve = { [weak self] in self?.tab?.showsCounter == true ? 40 : 12 }
-        outline.hasNote = { [weak self] in self?.displayedNoteID != nil }
+        outline.hasNote = { [weak self] in self?.displayedNoteID != nil && self?.isSealedDisplay == false }
         outline.onPointerLeft = { [weak self] in self?.textView.restoreCursor() }
         outline.setPreviewing(configuration.preview)
     }
@@ -125,7 +130,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         guard new != engine.configuration else { return }
         let change = engine.apply(new, selection: textView.selectedRange())
         if change.contains(.preview) {
-            textView.isEditable = displayedNoteID != nil && !new.preview
+            updateEditable()
             hintedLink = nil
             linkHint.show(address: nil, action: "")
             textView.resetHover()
@@ -167,7 +172,8 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
     var isCaretInTitleLine: Bool { engine.isCaretInTitleLine(textView.selectedRange()) }
 
     func display(_ note: Note?) {
-        if let current = displayedNoteID {
+        // A sealed page's caret and scroll mean nothing: the note keeps where it was.
+        if let current = displayedNoteID, !isSealedDisplay {
             viewStates[current] = (textView.selectedRange(), scrollView.contentView.bounds.origin)
         }
         pruneState()
@@ -176,11 +182,17 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
             tab?.isEdited = false
         }
         displayedNoteID = note?.id
+        isSealedDisplay = note?.isSealed == true
+        if let note, note.isSealed {
+            // Undo history holds every piece of text it replaced.
+            undoManagers.removeValue(forKey: note.id)?.removeAllActions()
+            endPrintSheet(showing: [note.id])
+        }
         if let id = note?.id { rememberShown(id) }
         replaceText(with: note?.text ?? "")
-        textView.isEditable = note != nil && !configuration.preview
+        updateEditable()
 
-        if let note, let state = viewStates[note.id] {
+        if let note, !isSealedDisplay, let state = viewStates[note.id] {
             textView.setSelectedRange(state.selection.clamped(to: textView.textStorage?.length ?? 0))
             scroll(to: state.scroll)
         } else {
@@ -197,6 +209,35 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
         textView.string
     }
 
+    func forgetText(of ids: Set<Note.ID>) {
+        for id in ids { undoManagers.removeValue(forKey: id)?.removeAllActions() }
+        endPrintSheet(showing: ids)
+    }
+
+    /// A print sheet holds its own copy of the note, preview included: it
+    /// closes when that note locks, sheets attached to it first (Save as PDF).
+    private func endPrintSheet(showing ids: Set<Note.ID>) {
+        guard let id = printingNoteID, ids.contains(id), let window = textView.window else { return }
+        printingNoteID = nil
+        var sheets: [NSWindow] = []
+        var next = window.attachedSheet
+        while let sheet = next {
+            sheets.append(sheet)
+            next = sheet.attachedSheet
+        }
+        for sheet in sheets.reversed() {
+            sheet.sheetParent?.endSheet(sheet, returnCode: .cancel)
+        }
+    }
+
+    @objc private func printOperationDidRun(_ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        printingNoteID = nil
+    }
+
+    private func updateEditable() {
+        textView.isEditable = displayedNoteID != nil && !configuration.preview && !isSealedDisplay
+    }
+
     func reloadText(_ text: String) {
         let selection = textView.selectedRange()
         let origin = scrollView.contentView.bounds.origin
@@ -211,6 +252,7 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
     /// Called for a new note: start typing (leaving Preview).
     func focus() {
+        guard !isSealedDisplay else { return }
         if configuration.preview, let id = displayedNoteID, library?.note(with: id)?.isDraft == true {
             tab?.isPreviewing = false
         }
@@ -252,13 +294,14 @@ final class EditorCoordinator: NSObject, NSTextViewDelegate, NoteEditor {
 
         let operation = NSPrintOperation(view: printView, printInfo: info)
         operation.jobTitle = title
-        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        printingNoteID = displayedNoteID
+        operation.runModal(for: window, delegate: self, didRun: #selector(printOperationDidRun(_:success:contextInfo:)), contextInfo: nil)
     }
 
     // MARK: NSTextViewDelegate
 
     func textDidChange(_ notification: Notification) {
-        guard !isReplacingText, let id = displayedNoteID else { return }
+        guard !isReplacingText, !isSealedDisplay, let id = displayedNoteID else { return }
         textRevision += 1
         // Once per note, not per keystroke: typing never goes through SwiftUI.
         if tab?.isEdited == false { tab?.isEdited = true }

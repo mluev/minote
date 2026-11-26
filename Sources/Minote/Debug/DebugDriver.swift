@@ -51,6 +51,16 @@ import SwiftUI
 ///   savetabs                  save the open tabs now and read them back
 ///   menus                     the File, View and Window menus with their shortcuts
 ///   trash <file name>         Move to Trash (driver notes only)
+///   setpassword <password>    set the locked notes' password (Touch ID is faked)
+///   unlock <password>         unlock with the password
+///   touchid                   unlock with (fake) Touch ID
+///   lockall                   lock every locked note now (Lock Now)
+///   lock <file name>          File ▸ Lock Note
+///   removelock <file name>    File ▸ Remove Lock
+///   lockscope notes|library   Settings ▸ Lock
+///   snapshotfront <path>      PNG of the front window, whatever its page shows (a locked panel too)
+///   print                     File ▸ Print… for the tab in front
+///   sheets                    how many sheets are attached to the front window (nested ones too)
 @MainActor
 enum DebugDriver {
     private static var timer: Timer?
@@ -343,6 +353,36 @@ enum DebugDriver {
                 return "error: no note \(rest)"
             }
             await workspace.library.moveToTrash(note.id)
+        case "setpassword":
+            do { try await workspace.lock.setPassword(rest, hint: nil, useBiometrics: true) } catch { return "error: \(error)" }
+        case "unlock":
+            do { try await workspace.lock.unlock(password: rest) } catch { return "error: \(error)" }
+        case "touchid":
+            if !(await workspace.lock.unlockWithBiometrics()) { return "error: Touch ID didn't unlock" }
+        case "lockall":
+            workspace.lock.lockNow()
+        case "lock", "removelock":
+            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == rest || $0.title == rest }) else {
+                return "error: no note \(rest)"
+            }
+            if parts[0] == "lock" { workspace.lockNote(note.id, in: workspace.targetWindow?.state) } else { workspace.removeLock(note.id) }
+        case "snapshotfront":
+            guard let window = workspace.targetWindow?.window else { return "error: no window" }
+            try? await Task.sleep(for: .milliseconds(300))
+            return snapshot(window, to: rest)
+        case "lockscope":
+            do { try await workspace.library.setScope(rest == "library" ? .library : .notes) } catch { return "error: \(error)" }
+        case "print":
+            guard let tab = workspace.targetWindow?.state.selectedTab else { return "error: no tab" }
+            tab.editor.printNote(title: "Driver")
+        case "sheets":
+            var count = 0
+            var next = workspace.targetWindow?.window.attachedSheet
+            while let sheet = next {
+                count += 1
+                next = sheet.attachedSheet
+            }
+            return "\(count)"
         case "menus":
             // The File, View and Window menus with their shortcuts.
             for menu in NSApp.mainMenu?.items.compactMap(\.submenu) ?? [] {
