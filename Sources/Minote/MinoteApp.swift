@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let workspace = Workspace()
     private var tabKeys: Any?
     private var middleClicks: Any?
+    private var secondaryClicks: Any?
     private var activity: Any?
     private var autoLock: AutoLock?
 
@@ -65,6 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A middle click on a tab closes it, as in browsers and editors.
         middleClicks = NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [weak self] event in
             let handled = MainActor.assumeIsolated { self?.handleMiddleClick(event) ?? false }
+            return handled ? nil : event
+        }
+        // Right-clicks open our own menus, whatever SwiftUI makes of the click.
+        secondaryClicks = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+            guard event.type == .rightMouseDown || event.modifierFlags.contains(.control) else { return event }
+            let handled = MainActor.assumeIsolated { self?.workspace.handleSecondaryClick(event) ?? false }
             return handled ? nil : event
         }
     }

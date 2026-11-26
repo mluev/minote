@@ -9,11 +9,17 @@ enum SidebarMetrics {
     /// The rounding of a note row, and of a tab in the bar: one shape for
     /// everything that can be selected in the chrome.
     static let rowCornerRadius: CGFloat = 8
+    /// How far each folder level steps in.
+    static let indent: CGFloat = 16
+    /// Every row of the list, folder or note: one line.
+    static let rowHeight: CGFloat = 28
+    /// The column folder and note icons share.
+    static let iconWidth: CGFloat = 16
 }
 
 /// The left column: a header level with the tab bar (the window buttons, the
-/// sidebar toggle and "New Note"), the search field, and the notes. It runs
-/// the window's full height, on the same paper as the tab bar.
+/// sidebar toggle, Search and "New Note"), the library bar, and the notes. It
+/// runs the window's full height, on the same paper as the tab bar.
 struct SidebarColumn: View {
     @Bindable var library: Library
     @Bindable var state: WindowState
@@ -26,6 +32,16 @@ struct SidebarColumn: View {
                 WindowButtonsSpace(width: state.windowButtonsWidth)
                 SidebarToggle(state: state, palette: palette)
                 Spacer(minLength: 0)
+                Button {
+                    state.toggle(.search)
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13.5, weight: .regular))
+                }
+                .buttonStyle(ChromeButtonStyle(palette: palette, isActive: state.overlay == .search))
+                .help("Search (⌘J)")
+                .accessibilityLabel("Search")
+                .disabled(library.isLibraryLocked)
                 Button {
                     workspace.newNote()
                 } label: {
@@ -40,10 +56,7 @@ struct SidebarColumn: View {
             .frame(height: TitlebarLayout.height)
             .background(WindowDragArea())
 
-            SearchField(text: $library.searchText, focusRequest: state.searchFocusRequest, palette: palette)
-                .padding(.horizontal, 10)
-                .padding(.top, 4)
-                .padding(.bottom, 6)
+            LibraryBar(library: library, state: state, workspace: workspace, preferences: workspace.sidebar, palette: palette)
 
             SidebarView(library: library, state: state, workspace: workspace)
         }
@@ -51,50 +64,80 @@ struct SidebarColumn: View {
     }
 }
 
-/// Searches every note's text; Escape clears it.
-private struct SearchField: View {
-    @Binding var text: String
-    let focusRequest: Int
+/// Under the search field: where the list is (the library, or a path back
+/// from the folder looked into), the view menu and New Folder.
+private struct LibraryBar: View {
+    @Bindable var library: Library
+    @Bindable var state: WindowState
+    let workspace: Workspace
+    @Bindable var preferences: SidebarPreferences
     let palette: EditorPalette
-    @FocusState private var isFocused: Bool
+    @ViewState private var anchor: CGRect = .zero
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(Color(nsColor: palette.syntax))
-            TextField("Search", text: $text)
-                .textFieldStyle(.plain)
+        HStack(spacing: 2) {
+            PathBack(scope: $state.scope, palette: palette)
+            Spacer(minLength: 4)
+            viewMenu
+            Button {
+                workspace.newFolder(in: state.scope, window: workspace.window(for: state))
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 12.5))
+            }
+            .buttonStyle(ChromeButtonStyle(palette: palette, size: 26))
+            .help("New Folder")
+            .accessibilityLabel("New Folder")
+            .disabled(library.isLibraryLocked)
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
+        .frame(height: 30)
+    }
+
+    private var viewMenu: some View {
+        let isOpen: Bool = if case .viewOptions = state.overlay { true } else { false }
+        return Button {
+            if isOpen { state.dismissOverlay() } else { state.present(.viewOptions(anchor: anchor)) }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
                 .font(.system(size: 12.5))
-                .foregroundStyle(Color(nsColor: palette.text))
-                .focused($isFocused)
-                .onExitCommand { text = "" }
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color(nsColor: palette.syntax))
-                }
-                .buttonStyle(.plain)
-                .help("Clear Search")
-                .accessibilityLabel("Clear Search")
+        }
+        .buttonStyle(ChromeButtonStyle(palette: palette, isActive: isOpen, size: 26))
+        .windowFrame { anchor = $0 }
+        .help("View Options")
+        .accessibilityLabel("View Options")
+    }
+}
+
+/// "Notes", or "Notes ▸ Work ▸ Clients" while looking into a folder: each
+/// part steps back to that folder.
+private struct PathBack: View {
+    @Binding var scope: FolderPath
+    let palette: EditorPalette
+
+    var body: some View {
+        HStack(spacing: 3) {
+            crumb("Notes", .root)
+            ForEach(Array(scope.components.indices), id: \.self) { index in
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: palette.syntax))
+                crumb(scope.components[index], FolderPath(Array(scope.components.prefix(index + 1))))
             }
         }
-        .padding(.horizontal, 9)
-        .frame(height: 28)
-        .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color(nsColor: palette.background).opacity(isFocused ? 1 : 0.6))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Color(nsColor: palette.rule).opacity(isFocused ? 1 : 0.6))
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { isFocused = true }
-        .onChange(of: focusRequest) { isFocused = true }
+        .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private func crumb(_ title: String, _ path: FolderPath) -> some View {
+        let isCurrent = path == scope
+        Button(title) { scope = path }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(nsColor: isCurrent ? palette.text : palette.quote))
+            .disabled(isCurrent)
+            .help(isCurrent ? "" : "Show “\(title)”")
     }
 }
 

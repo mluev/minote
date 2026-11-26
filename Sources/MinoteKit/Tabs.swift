@@ -35,11 +35,13 @@ public enum OpenPlacement: Equatable, Sendable {
     }
 }
 
-/// The library notes open in tabs, per window, kept across launches by file
-/// name. Files opened from Finder aren't kept (their windows never come back).
+/// The library notes open in tabs, per window, kept across launches by the
+/// file's path in the library ("Work/Ideas.md"; a bare name, as earlier
+/// builds kept it, is a note at the top). Files opened from Finder aren't
+/// kept (their windows never come back).
 public struct SavedTabs: Codable, Equatable, Sendable {
     public struct Window: Codable, Equatable, Sendable {
-        /// File names, in tab order.
+        /// Paths in the library, in tab order.
         public var notes: [String]
         /// The tab in front.
         public var front: Int

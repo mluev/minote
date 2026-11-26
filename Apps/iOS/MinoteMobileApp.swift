@@ -19,12 +19,19 @@ struct MinoteMobileApp: App {
         let environment = ProcessInfo.processInfo.environment
         if let seed = environment["MINOTE_UITEST_NOTE"] {
             let directory = LibraryLocation.defaultDirectory()
-            for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-            where NoteNaming.isNoteFile(file) || file.lastPathComponent == VaultRecord.fileName {
+            for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            where NoteNaming.isNoteFile(file) || file.lastPathComponent == VaultRecord.fileName || file.lastPathComponent == FolderSettings.fileName
+                || ((try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true && !file.lastPathComponent.hasPrefix(".")) {
                 try? FileManager.default.removeItem(at: file)
             }
-            UserDefaults.standard.removeObject(forKey: "LockVault")
+            for key in ["LockVault", LibraryView.key, "CollapsedFolders"] { UserDefaults.standard.removeObject(forKey: key) }
             try? seed.write(to: directory.appendingPathComponent("UI Test.md"), atomically: true, encoding: .utf8)
+            // A folder holding a note.
+            if let folder = environment["MINOTE_UITEST_FOLDER"] {
+                let url = directory.appendingPathComponent(folder, isDirectory: true)
+                try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try? "Filed Note\nInside the folder".write(to: url.appendingPathComponent("Filed Note.md"), atomically: true, encoding: .utf8)
+            }
             // A locked note, sealed with this password.
             if let password = environment["MINOTE_UITEST_LOCKED"],
                let key = try? LibraryKey.create(password: password, hint: "the test one", rounds: 1_000) {
@@ -36,19 +43,20 @@ struct MinoteMobileApp: App {
         #endif
         let backups = LibraryLocation.backupDirectory()
         let store = NoteFileStore(directory: LibraryLocation.defaultDirectory(), backupDirectory: backups, trash: MobileTrash.moveToTrash)
-        let library = Library(store: store, watcher: PathWatcher(url: store.directory))
+        let library = Library(store: store, watcher: FolderWatcher(root: store.directory))
         _library = ViewState(initialValue: library)
         let lock = LockController(library: library, biometrics: biometrics)
         _lock = ViewState(initialValue: lock)
         let state = MobileState()
         state.lock = lock
+        library.organisationHandler = { [weak state] change in state?.follow(change) }
         _state = ViewState(initialValue: state)
         _storage = ViewState(initialValue: LibraryStorageSwitcher(
             library: library,
             makeStore: { directory, isUbiquitous in
                 NoteFileStore(directory: directory, isUbiquitous: isUbiquitous, backupDirectory: backups, trash: MobileTrash.moveToTrash)
             },
-            makeWatcher: { PathWatcher(url: $0.standardizedFileURL.resolvingSymlinksInPath()) }
+            makeWatcher: { FolderWatcher(root: $0.standardizedFileURL.resolvingSymlinksInPath()) }
         ))
         MobileTrash.purgeExpired()
     }
@@ -132,6 +140,27 @@ final class MobileState {
     var isShowingSecurity = false
     /// The password sheet for a command (Lock Note without a password, or while locked).
     var passwordRequest: MobilePasswordRequest?
+    /// The list's view settings and closed folders, on this device.
+    let sidebar = SidebarPreferences()
+    /// The folder the list looks into ("Show Only This Folder").
+    var scope: FolderPath = .root
+    /// The folder being renamed or made, if any. Starting fills in its name.
+    var renamingFolder: FolderPath? {
+        didSet { if let renamingFolder, renamingFolder != oldValue { folderNameText = renamingFolder.name ?? "" } }
+    }
+    /// The folder alert's text field.
+    var folderNameText = ""
+
+    /// Folders renamed, moved or trashed: closed folders and the folder
+    /// looked into follow.
+    func follow(_ change: OrganisationChange) {
+        sidebar.follow(change)
+        switch change {
+        case .folderMoved(let from, let to): scope = from.rebasing(scope, onto: to)
+        case .folderRemoved(let folder): while folder.contains(scope), let parent = scope.parent { scope = parent }
+        case .noteMoved: break
+        }
+    }
 
     @ObservationIgnored weak var editor: MobileEditorCoordinator?
     @ObservationIgnored weak var lock: LockController?

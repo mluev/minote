@@ -61,17 +61,20 @@ public enum LibraryLocation {
     }
 
     /// Moves every note from one library folder to another, into or out of
-    /// iCloud, through the system's ubiquity API. Never overwrites: a name
-    /// that's taken gets a number. A file that can't be moved stays where it
-    /// was and the rest still move. Notes in iCloud that aren't on this device
-    /// yet are downloaded first (waiting up to `downloadTimeout`).
+    /// iCloud, through the system's ubiquity API: each note at the top, and
+    /// each folder whole, with everything in it. Never overwrites nor merges:
+    /// a name that's taken gets a number. An item that can't be moved stays
+    /// where it was and the rest still move. Notes in iCloud that aren't on
+    /// this device yet are downloaded first (waiting up to `downloadTimeout`);
+    /// a folder holding one that didn't arrive stays behind whole.
     /// Makes blocking file system calls: run it off the main actor.
     public static func moveNotes(from source: URL, to destination: URL, intoICloud: Bool,
                                  downloadTimeout: Duration = .seconds(30)) async throws -> NoteMoveReport {
         let manager = FileManager.default
         try manager.createDirectory(at: destination, withIntermediateDirectories: true)
         var report = NoteMoveReport()
-        var files = noteFiles(in: source)
+        let allFiles = noteFiles(in: source)
+        var items = topLevelItems(in: source)
 
         // Locked notes need their password to come along. A folder already
         // locked with another one would hold notes no single password opens.
@@ -81,39 +84,62 @@ public enum LibraryLocation {
         if movesVault, manager.fileExists(atPath: destinationVault.path) {
             let ours = try? VaultRecord.decode(Data(contentsOf: sourceVault))
             let theirs = try? VaultRecord.decode(Data(contentsOf: destinationVault))
-            if ours?.key.keyID != theirs?.key.keyID, files.contains(where: NoteNaming.isLockedFile) {
+            if ours?.key.keyID != theirs?.key.keyID, allFiles.contains(where: NoteNaming.isLockedFile) {
                 throw LockError.differentPasswords
             }
         }
-        let pending = files.filter { !isDownloaded($0) }
+        let pending = allFiles.filter { !isDownloaded($0) }
         if !pending.isEmpty {
             for file in pending { try? manager.startDownloadingUbiquitousItem(at: file) }
             let deadline = ContinuousClock.now.advanced(by: downloadTimeout)
             while ContinuousClock.now < deadline, !pending.allSatisfy(isDownloaded) {
                 try await Task.sleep(for: .milliseconds(250))
             }
-            for file in pending where !isDownloaded(file) {
-                report.leftBehind.append(file.lastPathComponent)
-                files.removeAll { $0 == file }
+            let missing = pending.filter { !isDownloaded($0) }.map(\.standardizedFileURL.path)
+            items.removeAll { item in
+                let path = item.url.standardizedFileURL.path
+                let held = missing.contains { $0 == path || $0.hasPrefix(path + "/") }
+                if held { report.leftBehind.append(item.url.lastPathComponent) }
+                return held
             }
         }
-        for file in files {
-            let ext = file.pathExtension
-            let stem = NoteNaming.uniqueStem(base: file.deletingPathExtension().lastPathComponent) {
-                manager.fileExists(atPath: destination.appendingPathComponent("\($0).\(ext)").path)
+        for item in items {
+            let target: URL
+            if item.isFolder {
+                let name = NoteNaming.uniqueStem(base: item.url.lastPathComponent) {
+                    manager.fileExists(atPath: destination.appendingPathComponent($0).path)
+                }
+                target = destination.appendingPathComponent(name, isDirectory: true)
+            } else {
+                let ext = item.url.pathExtension
+                let stem = NoteNaming.uniqueStem(base: item.url.deletingPathExtension().lastPathComponent) {
+                    manager.fileExists(atPath: destination.appendingPathComponent("\($0).\(ext)").path)
+                }
+                target = destination.appendingPathComponent("\(stem).\(ext)")
             }
-            let target = destination.appendingPathComponent("\(stem).\(ext)")
             do {
                 if intoICloud {
-                    try manager.setUbiquitous(true, itemAt: file, destinationURL: target)
-                } else if manager.isUbiquitousItem(at: file) {
-                    try manager.setUbiquitous(false, itemAt: file, destinationURL: target)
+                    try manager.setUbiquitous(true, itemAt: item.url, destinationURL: target)
+                } else if manager.isUbiquitousItem(at: item.url) {
+                    try manager.setUbiquitous(false, itemAt: item.url, destinationURL: target)
                 } else {
-                    try manager.moveItem(at: file, to: target)
+                    try manager.moveItem(at: item.url, to: target)
                 }
             } catch {
-                report.leftBehind.append(file.lastPathComponent)
+                report.leftBehind.append(item.url.lastPathComponent)
                 report.firstError = report.firstError ?? error.localizedDescription
+            }
+        }
+        // The library folder's own order comes along, unless the destination has one.
+        let sourceSettings = source.appendingPathComponent(FolderSettings.fileName, isDirectory: false)
+        let destinationSettings = destination.appendingPathComponent(FolderSettings.fileName, isDirectory: false)
+        if manager.fileExists(atPath: sourceSettings.path), !manager.fileExists(atPath: destinationSettings.path) {
+            if intoICloud {
+                try? manager.setUbiquitous(true, itemAt: sourceSettings, destinationURL: destinationSettings)
+            } else if manager.isUbiquitousItem(at: sourceSettings) {
+                try? manager.setUbiquitous(false, itemAt: sourceSettings, destinationURL: destinationSettings)
+            } else {
+                try? manager.moveItem(at: sourceSettings, to: destinationSettings)
             }
         }
         if movesVault, !manager.fileExists(atPath: destinationVault.path) {
@@ -133,18 +159,42 @@ public enum LibraryLocation {
         return report
     }
 
-    /// The note files in a folder, including iCloud notes that are only
-    /// placeholders (".Name.md.icloud") on this device, by their real names.
+    /// The note files in a folder and every folder below it, including iCloud
+    /// notes that are only placeholders (".Name.md.icloud") on this device, by
+    /// their real names. Hidden folders, packages and links are skipped.
     static func noteFiles(in directory: URL) -> [URL] {
         let manager = FileManager.default
-        guard let entries = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
-        return entries.compactMap { entry -> URL? in
-            if let real = NoteNaming.placeholderTarget(entry.lastPathComponent) {
-                return directory.appendingPathComponent(real, isDirectory: false)
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]
+        guard let entries = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys) else { return [] }
+        return entries.flatMap { entry -> [URL] in
+            let name = entry.lastPathComponent
+            if let real = NoteNaming.placeholderTarget(name) {
+                return [directory.appendingPathComponent(real, isDirectory: false)]
             }
-            guard !entry.lastPathComponent.hasPrefix("."), NoteNaming.isNoteFile(entry),
-                  (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
-            return entry
+            guard !name.hasPrefix("."), let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isSymbolicLink != true else { return [] }
+            if values.isDirectory == true {
+                return values.isPackage == true ? [] : noteFiles(in: entry)
+            }
+            return NoteNaming.isNoteFile(entry) && values.isRegularFile == true ? [entry] : []
+        }
+    }
+
+    /// What a move takes from the top of a library folder: its notes
+    /// (placeholders by their real names) and its folders.
+    private static func topLevelItems(in directory: URL) -> [(url: URL, isFolder: Bool)] {
+        let manager = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]
+        guard let entries = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys) else { return [] }
+        return entries.compactMap { entry in
+            let name = entry.lastPathComponent
+            if let real = NoteNaming.placeholderTarget(name) {
+                return (directory.appendingPathComponent(real, isDirectory: false), false)
+            }
+            guard !name.hasPrefix("."), let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isSymbolicLink != true else { return nil }
+            if values.isDirectory == true { return values.isPackage == true ? nil : (entry, true) }
+            return NoteNaming.isNoteFile(entry) && values.isRegularFile == true ? (entry, false) : nil
         }
     }
 

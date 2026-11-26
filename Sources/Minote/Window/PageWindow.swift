@@ -296,9 +296,18 @@ struct PageView: View {
         .accessibilityHidden(isCoveredByLock)
         .clipped()
         .overlay {
+            if !isCoveredByLock {
+                ChromeOverlayLayer(state: state, workspace: workspace, palette: palette)
+            }
+        }
+        .overlay {
             if isCoveredByLock {
                 AppLockView(lock: workspace.lock, palette: palette)
             }
+        }
+        .coordinateSpace(.named(ChromeOverlay.space))
+        .onChange(of: isCoveredByLock) { _, covered in
+            if covered { state.overlay = nil }
         }
         .background(Color(nsColor: palette.background))
         .background(WindowBackground(color: palette.background))
@@ -320,6 +329,6 @@ struct PageView: View {
     }
 
     private var titles: [String?] {
-        [state.selectedTab?.title] + state.tabs.map(\.fileName)
+        [state.selectedTab?.title] + state.tabs.map(\.relativePath)
     }
 }

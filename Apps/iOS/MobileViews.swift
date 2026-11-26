@@ -39,29 +39,43 @@ struct RootView: View {
         } message: {
             Text("The file keeps this name instead of following its first line.")
         }
+        .alert("Rename Folder", isPresented: Binding(
+            get: { state.renamingFolder != nil },
+            set: { if !$0 { state.renamingFolder = nil } }
+        )) {
+            TextField("Name", text: $state.folderNameText)
+            Button("Rename") {
+                guard let folder = state.renamingFolder else { return }
+                let name = state.folderNameText
+                state.renamingFolder = nil
+                Task { await library.renameFolder(folder, to: name) }
+            }
+            Button("Cancel", role: .cancel) { state.renamingFolder = nil }
+        }
         .libraryErrorAlert(library)
     }
 }
 
-/// Every note, newest first, with search and a "+" button.
+/// The library: folders that open and close and the notes in them (or a
+/// flat list), with search, a view menu and a "+" button.
 struct NotesList: View {
     @Bindable var library: Library
-    let state: MobileState
+    @Bindable var state: MobileState
     let storage: LibraryStorageSwitcher
     @Environment(\.undoManager) private var undoManager
     @Environment(\.horizontalSizeClass) private var sizeClass
 
+    private var preferences: SidebarPreferences { state.sidebar }
+
     var body: some View {
-        let notes = library.visibleNotes
+        let rows = SidebarRows.build(.init(
+            notes: library.notes, folders: library.folders, settings: library.folderSettings,
+            view: preferences.view, collapsed: preferences.collapsed, scope: state.scope, search: library.searchText
+        ))
         List(selection: $library.selectedID) {
-            ForEach(notes) { note in
-                MobileNoteRow(note: note)
-                    .tag(note.id)
+            ForEach(rows) { row in
+                rowView(row)
                     .listRowBackground(sizeClass == .compact ? Color(uiColor: EditorPalette.standard.background) : nil)
-                    .swipeActions {
-                        Button("Delete", systemImage: "trash", role: .destructive) { trash(note) }
-                    }
-                    .contextMenu { menu(for: note) }
             }
         }
         .modifier(LibraryListStyle(compact: sizeClass == .compact))
@@ -69,18 +83,29 @@ struct NotesList: View {
         .background(sizeClass == .compact ? Color(uiColor: EditorPalette.standard.background) : .clear)
         .searchable(text: $library.searchText, prompt: "Search")
         .overlay {
-            if notes.isEmpty && !library.searchText.isEmpty {
+            if rows.isEmpty && !library.searchText.isEmpty {
                 ContentUnavailableView.search(text: library.searchText)
             }
         }
-        .navigationTitle("Notes")
+        .navigationTitle(state.scope.name ?? "Notes")
+        .onChange(of: library.folders) { _, folders in
+            while !state.scope.isRoot && !folders.contains(state.scope), let parent = state.scope.parent { state.scope = parent }
+        }
         .toolbar {
+            if let parent = state.scope.parent {
+                ToolbarItem(placement: .navigation) {
+                    Button(parent.name ?? "Notes", systemImage: "chevron.backward") { state.scope = parent }
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New Note", systemImage: "plus") {
-                    library.newNote()
+                    library.newNote(in: state.scope)
                     state.preferredColumn = .detail
                 }
                 .keyboardShortcut("n")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                viewMenu
             }
             ToolbarItem(placement: .secondaryAction) {
                 Button("Locked Notes…", systemImage: "lock") { state.isShowingSecurity = true }
@@ -98,6 +123,125 @@ struct NotesList: View {
     }
 
     @ViewBuilder
+    private func rowView(_ row: SidebarRow) -> some View {
+        switch row {
+        case .folder(let path, let depth, let count, let isOpen):
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { preferences.toggle(path) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Label(path.name ?? "", systemImage: isOpen ? "folder" : "folder.fill")
+                        .font(.headline)
+                    Spacer()
+                    if preferences.view.showsCounts && count > 0 {
+                        Text("\(count)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, CGFloat(depth) * 16)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(path.name ?? "")
+            .accessibilityValue("\(isOpen ? "Open" : "Closed"), \(count) \(count == 1 ? "note" : "notes")")
+            .swipeActions {
+                Button("Delete", systemImage: "trash", role: .destructive) { Task { await library.trashFolder(path, undoManager: undoManager) } }
+            }
+            .contextMenu { folderMenu(path) }
+        case .note(let note, let depth, let label):
+            MobileNoteRow(note: note, folderLabel: label, showsDate: preferences.view.showsDates)
+                .padding(.leading, CGFloat(depth) * 16)
+                .tag(note.id)
+                .swipeActions {
+                    Button("Delete", systemImage: "trash", role: .destructive) { trash(note) }
+                }
+                .contextMenu { menu(for: note) }
+        case .section(let title):
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .selectionDisabled()
+        }
+    }
+
+    private var viewMenu: some View {
+        let order = library.sortOrder(of: state.scope)
+        return Menu {
+            Picker("Group By", selection: Bindable(preferences).view.groupBy) {
+                ForEach(LibraryView.Grouping.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            }
+            .pickerStyle(.menu)
+            Picker("Sort By", selection: Binding(
+                get: { order.sort },
+                set: { library.setSort(SortOrder($0, reversed: $0 == .manual ? false : order.reversed), for: state.scope) }
+            )) {
+                ForEach(NoteSort.allCases.filter { $0 != .manual }, id: \.self) { Text($0.displayName).tag($0) }
+                if order.sort == .manual { Text(NoteSort.manual.displayName).tag(NoteSort.manual) }
+            }
+            .pickerStyle(.menu)
+            Toggle("Reverse Order", isOn: Binding(
+                get: { order.reversed },
+                set: { library.setSort(SortOrder(order.sort, reversed: $0), for: state.scope) }
+            ))
+            .disabled(order.sort == .manual)
+            Menu("Show") {
+                Toggle("Dates", isOn: Bindable(preferences).view.showsDates)
+                Toggle("Note Counts", isOn: Bindable(preferences).view.showsCounts)
+                Toggle("Locked Notes Only", isOn: Bindable(preferences).view.lockedOnly)
+            }
+            Divider()
+            Button("New Folder", systemImage: "folder.badge.plus") { newFolder(in: state.scope) }
+            Button("Reset to Defaults") {
+                preferences.view = .standard
+                library.setSort(nil, for: state.scope)
+            }
+        } label: {
+            Label("View Options", systemImage: "line.3.horizontal.decrease.circle")
+        }
+    }
+
+    private func newFolder(in parent: FolderPath) {
+        Task { @MainActor in
+            guard let folder = await library.newFolder(in: parent) else { return }
+            preferences.reveal(folder)
+            state.renamingFolder = folder
+        }
+    }
+
+    @ViewBuilder
+    private func folderMenu(_ folder: FolderPath) -> some View {
+        Button("New Note", systemImage: "square.and.pencil") {
+            library.newNote(in: folder)
+            state.preferredColumn = .detail
+        }
+        Button("New Folder", systemImage: "folder.badge.plus") { newFolder(in: folder) }
+        Button("Rename…", systemImage: "pencil") { state.renamingFolder = folder }
+        Button("Show Only This Folder", systemImage: "arrow.down.right.and.arrow.up.left") { state.scope = folder }
+        moveToMenu(current: folder.parent ?? .root, moving: folder) { parent in
+            Task { await library.moveFolder(folder, into: parent, undoManager: undoManager) }
+        }
+        Divider()
+        Button("Delete", systemImage: "trash", role: .destructive) {
+            Task { await library.trashFolder(folder, undoManager: undoManager) }
+        }
+    }
+
+    private func moveToMenu(current: FolderPath, moving: FolderPath? = nil, move: @escaping (FolderPath) -> Void) -> some View {
+        Menu("Move to", systemImage: "folder") {
+            Button("Notes") { move(.root) }
+                .disabled(current.isRoot)
+            ForEach(library.folders, id: \.self) { folder in
+                Button(String(repeating: "    ", count: folder.depth - 1) + (folder.name ?? "")) { move(folder) }
+                    .disabled(folder == current || moving?.contains(folder) == true)
+            }
+        }
+    }
+
+    @ViewBuilder
     private func menu(for note: Note) -> some View {
         Button("Rename…", systemImage: "pencil") { state.renaming = note }
             .disabled(note.isBlankDraft)
@@ -105,6 +249,9 @@ struct NotesList: View {
             Task { await library.duplicate(note.id) }
         }
         .disabled(note.isDraft)
+        moveToMenu(current: note.folder) { folder in
+            Task { await library.moveNote(note.id, to: folder, undoManager: undoManager) }
+        }
         LockMenuItem(note: note, library: library, state: state)
         // A locked note's file is ciphertext: nothing to share.
         if let url = note.fileURL, !note.isLocked {
@@ -121,6 +268,10 @@ struct NotesList: View {
 
 struct MobileNoteRow: View {
     let note: Note
+    /// The note's folder, in flat lists.
+    var folderLabel: FolderPath? = nil
+    var showsPreview = true
+    var showsDate = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -128,7 +279,7 @@ struct MobileNoteRow: View {
                 .font(.headline)
                 .foregroundStyle(note.title.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
-            if !note.excerpt.isEmpty {
+            if showsPreview && !note.excerpt.isEmpty {
                 Text(note.excerpt)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -139,7 +290,14 @@ struct MobileNoteRow: View {
                     Image(systemName: note.isSealed ? "lock.fill" : "lock.open.fill")
                         .accessibilityLabel(note.isSealed ? "Locked" : "Unlocked")
                 }
-                Text(NoteDateText.string(for: note.modified))
+                if showsDate {
+                    Text(NoteDateText.string(for: note.modified))
+                }
+                if let folderLabel, !folderLabel.isRoot {
+                    Label(folderLabel.string, systemImage: "folder")
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                }
             }
             .font(.caption)
             .foregroundStyle(.tertiary)

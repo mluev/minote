@@ -116,6 +116,17 @@ public enum NoteNaming {
         return stem.isEmpty ? untitled : stem.precomposedStringWithCanonicalMapping
     }
 
+    public static let newFolder = "New Folder"
+
+    /// A safe folder name: cleaned like a note's file name (no "/" or ":",
+    /// no leading dot, trimmed, not too long), "New Folder" when nothing's left.
+    public static func folderName(for name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return newFolder }
+        let stem = fileStem(forTitle: trimmed)
+        return stem == untitled && trimmed.caseInsensitiveCompare(untitled) != .orderedSame ? newFolder : stem
+    }
+
     /// Strips whitespace and dots: leading dots would hide the file,
     /// trailing dots make "Title..md".
     private static func trimmed(_ s: String, leading: Bool) -> String {

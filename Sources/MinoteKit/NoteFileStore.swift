@@ -26,7 +26,11 @@ public enum ScannedContent: Sendable {
 /// One note file found by a scan.
 public struct ScannedFile: Sendable {
     public let url: URL
+    /// The library folder it's in.
+    public var folder: FolderPath = .root
     public let stamp: FileStamp
+    /// When the file was made (its modification date where that's unknown).
+    public var created: Date
     /// The file name Minote gave the file, if it created it.
     public let autoNameTag: String?
     /// Contents, or nil when the stamp matched what the caller already knew.
@@ -38,6 +42,43 @@ public struct ScannedFile: Sendable {
         case .plain(let text): text
         case .locked(_, let text): text
         case nil: nil
+        }
+    }
+
+    init(url: URL, folder: FolderPath = .root, stamp: FileStamp, created: Date? = nil, autoNameTag: String?, content: ScannedContent?) {
+        self.url = url
+        self.folder = folder
+        self.stamp = stamp
+        self.created = created ?? stamp.modified
+        self.autoNameTag = autoNameTag
+        self.content = content
+    }
+}
+
+/// One folder found by a scan, below the library folder.
+public struct ScannedFolder: Sendable, Equatable {
+    public let path: FolderPath
+}
+
+/// Everything a scan found: the notes, every folder (empty ones too), and
+/// the settings of the folders that have them (the library folder's too).
+public struct ScanResult: Sendable {
+    public var files: [ScannedFile] = []
+    public var folders: [ScannedFolder] = []
+    public var settings: [FolderPath: FolderSettings.Read] = [:]
+}
+
+/// Why a folder command was refused.
+public enum FolderError: LocalizedError, Equatable {
+    case nameTaken(String)
+    case intoItself
+    case missing
+
+    public var errorDescription: String? {
+        switch self {
+        case .nameTaken(let name): "There's already an item named “\(name)” there."
+        case .intoItself: "A folder can't go inside itself."
+        case .missing: "The folder isn't there any more."
         }
     }
 }
@@ -110,7 +151,10 @@ public actor NoteFileStore {
     /// stems of its locked notes: a note that turns up locked (by another
     /// device too) takes its plain backups on this one with it.
     private var plainBackupIDs: [String: String] = [:]
-    private var lockedStems: Set<String> = []
+    /// How many locked notes the last scan saw under each file name: a name
+    /// counted more often than before has a note newly locked. By name, not
+    /// path, so a folder renamed or moved doesn't look like new locks.
+    private var lockedNameCounts: [String: Int] = [:]
     private let logger = Logger(subsystem: "com.mlutfullaev.minote", category: "FileStore")
 
     private var fileManager: FileManager { .default }
@@ -154,71 +198,106 @@ public actor NoteFileStore {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    private static let scanKeys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+    private static let scanKeys: Set<URLResourceKey> = [
+        .isRegularFileKey, .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey,
+        .contentModificationDateKey, .creationDateKey, .fileSizeKey,
+    ]
 
-    /// Lists every note file. Contents are read only for files whose stamp
-    /// differs from `known`, so periodic rescans stay cheap. Locked notes are
-    /// opened with `sealer` when it holds their key, and stay sealed otherwise.
+    /// Lists every note file, in the library folder and every folder below it.
     public func scan(known: [URL: FileStamp], sealer: NoteSealer? = nil) throws -> [ScannedFile] {
+        try scanTree(known: known, sealer: sealer).files
+    }
+
+    /// Lists every note file and every folder under the library folder.
+    /// Contents are read only for files whose stamp differs from `known`, so
+    /// periodic rescans stay cheap. Locked notes are opened with `sealer` when
+    /// it holds their key, and stay sealed otherwise. Hidden items, packages
+    /// and symbolic links are skipped, with everything inside them.
+    public func scanTree(known: [URL: FileStamp], sealer: NoteSealer? = nil) throws -> ScanResult {
         if let singleFile {
             // The opened file alone, or nothing while it's missing. Minote's naming
             // tag is ignored: a file opened from elsewhere never follows its first
             // line, even a copy of a note Minote created.
             guard let values = try? URL(fileURLWithPath: singleFile.path).resourceValues(forKeys: Self.scanKeys),
-                  values.isRegularFile == true else { return [] }
+                  values.isRegularFile == true else { return ScanResult() }
             let stamp = FileStamp(values)
             let text = known[singleFile] == stamp ? nil : try readText(at: singleFile)
-            return [ScannedFile(url: singleFile, stamp: stamp, autoNameTag: nil, content: text.map(ScannedContent.plain))]
+            return ScanResult(files: [ScannedFile(url: singleFile, stamp: stamp, created: values.creationDate,
+                                                  autoNameTag: nil, content: text.map(ScannedContent.plain))])
         }
         try prepare()
-        let listing = try fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(Self.scanKeys),
-            options: [.skipsPackageDescendants, .skipsSubdirectoryDescendants]
-        )
 
-        var files: [ScannedFile] = []
+        var result = ScanResult()
         var locked: [String: URL] = [:]
         var backupIDs: [String: String] = [:]
-        for entry in listing {
-            let name = entry.lastPathComponent
-            if name.hasPrefix(".") {
-                // A note that isn't on this device yet: ask iCloud for it.
-                if isUbiquitous, let real = NoteNaming.placeholderTarget(name) {
-                    try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: real))
-                }
-                continue
-            }
-            guard NoteNaming.isNoteFile(entry),
-                  let values = try? entry.resourceValues(forKeys: Self.scanKeys),
-                  values.isRegularFile == true else { continue }
-            let url = fileURL(named: name)
-            let stamp = FileStamp(values)
-            let tag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: url)
-            let stem = Self.stemKey(url.deletingPathExtension().lastPathComponent)
-            if NoteNaming.isLockedFile(url) {
-                locked[stem] = url
-            } else if let id = ExtendedAttributes.string(named: Self.backupIDAttribute, at: url) {
-                backupIDs[stem] = id
-            }
-
-            if known[url] == stamp {
-                files.append(ScannedFile(url: url, stamp: stamp, autoNameTag: tag, content: nil))
-                continue
-            }
+        var pending: [FolderPath] = [.root]
+        while let folder = pending.popLast() {
+            let folderURL = folderURL(folder)
+            let listing: [URL]
             do {
-                let content = try readContent(at: url, sealer: sealer)
-                if isUbiquitous { preserveConflicts(of: url) }
-                files.append(ScannedFile(url: url, stamp: stamp, autoNameTag: tag, content: content))
-            } catch {
-                logger.error("Skipping unreadable file \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                listing = try fileManager.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: Array(Self.scanKeys))
+            } catch where !folder.isRoot {
+                // A folder that went away mid-scan, or can't be read: the rest still counts.
+                logger.error("Skipping unreadable folder: \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+            for entry in listing {
+                let name = entry.lastPathComponent
+                if name == FolderSettings.fileName {
+                    result.settings[folder] = readFolderSettings(at: entry)
+                    continue
+                }
+                if name.hasPrefix(".") {
+                    // A note, or a folder's settings, that isn't on this device yet: ask iCloud for it.
+                    if isUbiquitous, name == ".\(FolderSettings.fileName).icloud" {
+                        try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: FolderSettings.fileName, in: folderURL))
+                    } else if isUbiquitous, let real = NoteNaming.placeholderTarget(name) {
+                        try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: real, in: folderURL))
+                    }
+                    continue
+                }
+                guard let values = try? entry.resourceValues(forKeys: Self.scanKeys), values.isSymbolicLink != true else { continue }
+                if values.isDirectory == true {
+                    guard values.isPackage != true else { continue }
+                    let path = folder.appending(name)
+                    result.folders.append(ScannedFolder(path: path))
+                    pending.append(path)
+                    continue
+                }
+                guard NoteNaming.isNoteFile(entry), values.isRegularFile == true else { continue }
+                let url = fileURL(named: name, in: folderURL)
+                let stamp = FileStamp(values)
+                let tag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: url)
+                let key = Self.stemKey(folder.relativePath(ofFile: url.deletingPathExtension().lastPathComponent))
+                if NoteNaming.isLockedFile(url) {
+                    locked[key] = url
+                } else if let id = ExtendedAttributes.string(named: Self.backupIDAttribute, at: url) {
+                    backupIDs[key] = id
+                }
+
+                if known[url] == stamp {
+                    result.files.append(ScannedFile(url: url, folder: folder, stamp: stamp, created: values.creationDate,
+                                                    autoNameTag: tag, content: nil))
+                    continue
+                }
+                do {
+                    let content = try readContent(at: url, sealer: sealer)
+                    if isUbiquitous { preserveConflicts(of: url) }
+                    result.files.append(ScannedFile(url: url, folder: folder, stamp: stamp, created: values.creationDate,
+                                                    autoNameTag: tag, content: content))
+                } catch {
+                    logger.error("Skipping unreadable file \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
-        let newlyLocked = locked.filter { !lockedStems.contains($0.key) }
+        var counts: [String: Int] = [:]
+        for url in locked.values { counts[Self.stemKey(url.deletingPathExtension().lastPathComponent), default: 0] += 1 }
+        let grown = Set(counts.filter { $0.value > (lockedNameCounts[$0.key] ?? 0) }.keys)
+        let newlyLocked = locked.filter { grown.contains(Self.stemKey($0.value.deletingPathExtension().lastPathComponent)) }
         if !newlyLocked.isEmpty { removePlainBackups(ofLocked: newlyLocked) }
-        lockedStems = Set(locked.keys)
+        lockedNameCounts = counts
         plainBackupIDs = backupIDs
-        return files
+        return result
     }
 
     /// Notes that turned up locked: at launch, or locked on another device,
@@ -229,16 +308,20 @@ public actor NoteFileStore {
     private func removePlainBackups(ofLocked locked: [String: URL]) {
         guard let items = try? fileManager.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil) else { return }
         var ids = Set<String>()
-        for (stem, url) in locked {
-            if let id = plainBackupIDs[stem] { ids.insert(id) }
+        // Backups are named by file name alone: a same-named plain note in
+        // another folder loses its backups too, which errs on the lock's side.
+        var names = Set<String>()
+        for (key, url) in locked {
+            if let id = plainBackupIDs[key] { ids.insert(id) }
             if let id = ExtendedAttributes.string(named: Self.backupIDAttribute, at: url) { ids.insert(id) }
+            names.insert(Self.stemKey(url.deletingPathExtension().lastPathComponent))
         }
         for item in items {
             // "<date> <file name>"
             guard let name = item.lastPathComponent.split(separator: " ", maxSplits: 1).last.map(String.init) else { continue }
             let original = URL(fileURLWithPath: name)
             guard NoteNaming.isPlainNoteFile(original) else { continue }
-            let sameName = locked[Self.stemKey(original.deletingPathExtension().lastPathComponent)] != nil
+            let sameName = names.contains(Self.stemKey(original.deletingPathExtension().lastPathComponent))
             let sameID = ExtendedAttributes.string(named: Self.backupIDAttribute, at: item).map(ids.contains) ?? false
             guard sameName || sameID else { continue }
             do {
@@ -310,20 +393,23 @@ public actor NoteFileStore {
     }
 
     /// Creates a new auto-named file for `text`, named after `base` (or "base 2", …).
-    public func create(text: String, base: String) throws -> SavedFile {
-        try create(.plain(text), base: base)
+    public func create(text: String, base: String, in folder: FolderPath = .root) throws -> SavedFile {
+        try create(.plain(text), base: base, in: folder)
     }
 
-    /// Creates a new auto-named note file, named after `base` (or "base 2", …):
-    /// a locked note when the payload is sealed, so its text is never on disk
-    /// in the clear, not even for a moment.
-    public func create(_ payload: NotePayload, base: String) throws -> SavedFile {
+    /// Creates a new auto-named note file in `folder`, named after `base` (or
+    /// "base 2", …): a locked note when the payload is sealed, so its text is
+    /// never on disk in the clear, not even for a moment. A folder that went
+    /// away is made again: the note's text matters more than its absence.
+    public func create(_ payload: NotePayload, base: String, in folder: FolderPath = .root) throws -> SavedFile {
         try requireFolder()
         try prepare()
+        let folderURL = folderURL(folder)
+        if !folder.isRoot { try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true) }
         let data = payload.data
         while true {
-            let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0) }
-            let url = fileURL(stem: stem, ext: payload.fileExtension)
+            let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, in: folderURL) }
+            let url = fileURL(stem: stem, ext: payload.fileExtension, in: folderURL)
             do {
                 try coordinate(writing: url, options: .forReplacing) { try data.write(to: $0, options: .withoutOverwriting) }
             } catch where fileManager.fileExists(atPath: url.path) {
@@ -363,18 +449,22 @@ public actor NoteFileStore {
     public func convert(_ url: URL, to payload: NotePayload) throws -> SavedFile {
         try requireFolder()
         let currentStem = url.deletingPathExtension().lastPathComponent
+        let folderURL = url.deletingLastPathComponent()
         let autoNameTag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: url)
+        let created = try? URL(fileURLWithPath: url.path).resourceValues(forKeys: [.creationDateKey]).creationDate
         let data = payload.data
         while true {
-            let stem = NoteNaming.uniqueStem(base: currentStem) { stemTaken($0, except: url) }
-            let destination = fileURL(stem: stem, ext: payload.fileExtension)
+            let stem = NoteNaming.uniqueStem(base: currentStem) { stemTaken($0, except: url, in: folderURL) }
+            let destination = fileURL(stem: stem, ext: payload.fileExtension, in: folderURL)
             do {
                 try coordinate(writing: destination, options: .forReplacing) { try data.write(to: $0, options: .withoutOverwriting) }
             } catch where fileManager.fileExists(atPath: destination.path) {
                 continue
             }
-            // Finder tags, labels and the naming tag come along.
+            // Finder tags, labels and the naming tag come along, and the
+            // creation date: locking mustn't reorder a list sorted by it.
             try? copyExtendedAttributes(from: url, to: destination)
+            if let created { try? fileManager.setAttributes([.creationDate: created], ofItemAtPath: destination.path) }
             if stem != currentStem, let autoNameTag, NoteNaming.stemsMatch(autoNameTag, currentStem) {
                 tag(destination, with: stem)
             }
@@ -470,7 +560,7 @@ public actor NoteFileStore {
     /// (possibly unchanged) URL. Never overwrites another file.
     public func rename(_ url: URL, toBase base: String) throws -> URL {
         try requireFolder()
-        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, except: url) }
+        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, except: url, in: url.deletingLastPathComponent()) }
         guard stem != url.deletingPathExtension().lastPathComponent else { return url }
         let destination = try move(url, toStem: stem)
         tag(destination, with: stem)
@@ -481,8 +571,8 @@ public actor NoteFileStore {
     /// Refuses to replace another file.
     public func renameManually(_ url: URL, to stem: String) throws -> URL {
         try requireFolder()
-        let destination = fileURL(stem: stem, ext: url.pathExtension)
-        if stemTaken(stem, except: url) {
+        let destination = fileURL(stem: stem, ext: url.pathExtension, in: url.deletingLastPathComponent())
+        if stemTaken(stem, except: url, in: url.deletingLastPathComponent()) {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
         }
         _ = try move(url, toStem: stem)
@@ -494,20 +584,11 @@ public actor NoteFileStore {
     /// replacing another file; coordinated for iCloud.
     private func move(_ url: URL, toStem stem: String) throws -> URL {
         let current = url.deletingPathExtension().lastPathComponent
-        let destination = fileURL(stem: stem, ext: url.pathExtension)
+        let destination = fileURL(stem: stem, ext: url.pathExtension, in: url.deletingLastPathComponent())
         guard stem != current else { return destination }
         // On a case-insensitive volume the destination of a case-only rename
         // "exists" (it's the same file), so an exclusive rename would refuse it.
-        let caseOnly = NoteNaming.stemsMatch(stem, current)
-        try coordinate(moving: url, to: destination) { from, to in
-            let status = from.withUnsafeFileSystemRepresentation { src in
-                to.withUnsafeFileSystemRepresentation { dst -> Int32 in
-                    guard let src, let dst else { return -1 }
-                    return caseOnly ? Foundation.rename(src, dst) : renamex_np(src, dst, UInt32(RENAME_EXCL))
-                }
-            }
-            if status != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        }
+        try exclusiveMove(url, to: destination, caseOnly: NoteNaming.stemsMatch(stem, current))
         return destination
     }
 
@@ -516,8 +597,9 @@ public actor NoteFileStore {
         try requireFolder()
         let ext = url.pathExtension
         let base = url.deletingPathExtension().lastPathComponent + " copy"
-        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0) }
-        let destination = fileURL(stem: stem, ext: ext)
+        let folderURL = url.deletingLastPathComponent()
+        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, in: folderURL) }
+        let destination = fileURL(stem: stem, ext: ext, in: folderURL)
         try coordinate(writing: destination, options: .forReplacing) { try fileManager.copyItem(at: url, to: $0) }
         ExtendedAttributes.remove(named: Self.autoNameAttribute, at: destination)
         ExtendedAttributes.remove(named: Self.backupIDAttribute, at: destination)
@@ -533,14 +615,17 @@ public actor NoteFileStore {
         return trashed
     }
 
-    /// Puts a trashed file back into the library, under a free name.
-    public func restore(_ trashedURL: URL, preferredName: String) throws -> URL {
+    /// Puts a trashed file back into the library folder it came from (made
+    /// again if it's gone), under a free name.
+    public func restore(_ trashedURL: URL, preferredName: String, in folder: FolderPath = .root) throws -> URL {
         try requireFolder()
         try prepare()
+        let folderURL = folderURL(folder)
+        if !folder.isRoot { try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true) }
         let ext = (preferredName as NSString).pathExtension
         let base = (preferredName as NSString).deletingPathExtension
-        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0) }
-        let destination = fileURL(stem: stem, ext: ext)
+        let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, in: folderURL) }
+        let destination = fileURL(stem: stem, ext: ext, in: folderURL)
         if isUbiquitous, !fileManager.isUbiquitousItem(at: trashedURL) {
             // A file enters iCloud Drive through the ubiquity API, not a plain move.
             try fileManager.setUbiquitous(true, itemAt: trashedURL, destinationURL: destination)
@@ -605,10 +690,11 @@ public actor NoteFileStore {
         guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url), !conflicts.isEmpty else { return }
         let ext = url.pathExtension
         var keptAll = true
+        let folderURL = url.deletingLastPathComponent()
         for version in conflicts {
             let base = url.deletingPathExtension().lastPathComponent + " (conflict)"
-            let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0) }
-            let destination = fileURL(stem: stem, ext: ext)
+            let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, in: folderURL) }
+            let destination = fileURL(stem: stem, ext: ext, in: folderURL)
             let source = version.url
             do {
                 try coordinate(writing: destination, options: .forReplacing) { try fileManager.copyItem(at: source, to: $0) }
@@ -632,25 +718,197 @@ public actor NoteFileStore {
         if singleFile != nil { throw CocoaError(.featureUnsupported) }
     }
 
+    /// A file in the library folder itself.
     public nonisolated func fileURL(named name: String) -> URL {
-        directory.appendingPathComponent(name, isDirectory: false)
+        fileURL(named: name, in: directory)
     }
 
-    nonisolated func fileURL(stem: String, ext: String) -> URL {
-        fileURL(named: ext.isEmpty ? stem : "\(stem).\(ext)")
+    /// A library folder's URL. Every URL the store hands out is built from
+    /// these, so the same file always gets an equal URL.
+    public nonisolated func folderURL(_ folder: FolderPath) -> URL {
+        folder.url(in: directory)
     }
 
-    /// Whether some note already has this name, with any extension the library
-    /// lists: "Ideas.md" and "Ideas.mdlock" side by side would be two notes
-    /// with one name, and locking one would collide with the other.
-    private func stemTaken(_ stem: String, except url: URL? = nil) -> Bool {
+    /// The library folder a file of the library is in.
+    public nonisolated func folder(of url: URL) -> FolderPath {
+        FolderPath(folderOf: url, root: directory) ?? .root
+    }
+
+    nonisolated func fileURL(named name: String, in folderURL: URL) -> URL {
+        folderURL.appendingPathComponent(name, isDirectory: false)
+    }
+
+    nonisolated func fileURL(stem: String, ext: String, in folderURL: URL) -> URL {
+        fileURL(named: ext.isEmpty ? stem : "\(stem).\(ext)", in: folderURL)
+    }
+
+    /// Whether some note in `folderURL` already has this name, with any
+    /// extension the library lists: "Ideas.md" and "Ideas.mdlock" side by
+    /// side would be two notes with one name, and locking one would collide
+    /// with the other. Other folders may have a note of that name.
+    private func stemTaken(_ stem: String, except url: URL? = nil, in folderURL: URL) -> Bool {
         for ext in NoteNaming.supportedExtensions.union([NoteNaming.lockedExtension]) {
-            let candidate = fileURL(stem: stem, ext: ext)
+            let candidate = fileURL(stem: stem, ext: ext, in: folderURL)
             guard fileManager.fileExists(atPath: candidate.path) else { continue }
             if let url, isSameFile(candidate, url) { continue }
             return true
         }
         return false
+    }
+
+    // MARK: Folders
+
+    /// A folder's settings file: what it says, or nil when it can't be read
+    /// yet. In iCloud, the current version wins over conflicting ones.
+    private func readFolderSettings(at url: URL) -> FolderSettings.Read? {
+        if isUbiquitous, let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url), !conflicts.isEmpty {
+            for version in conflicts { version.isResolved = true }
+            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+        }
+        guard let data = try? readData(at: url) else { return nil }
+        return FolderSettings.decode(data)
+    }
+
+    /// Writes a folder's settings, or removes the file when there's nothing to keep.
+    public func writeFolderSettings(_ settings: FolderSettings?, for folder: FolderPath) throws {
+        try requireFolder()
+        let folderURL = folderURL(folder)
+        let url = fileURL(named: FolderSettings.fileName, in: folderURL)
+        if let settings, !settings.isEmpty {
+            guard fileManager.fileExists(atPath: folderURL.path) else { throw FolderError.missing }
+            let data = try settings.encoded()
+            try coordinate(writing: url, options: .forReplacing) { try data.write(to: $0, options: .atomic) }
+        } else if fileManager.fileExists(atPath: url.path) {
+            try coordinate(writing: url, options: .forDeleting) { try fileManager.removeItem(at: $0) }
+        }
+    }
+
+    /// Makes a new folder in `parent`, named `base` or "base 2", … Returns it.
+    public func createFolder(named base: String, in parent: FolderPath) throws -> FolderPath {
+        try requireFolder()
+        try prepare()
+        let parentURL = folderURL(parent)
+        guard fileManager.fileExists(atPath: parentURL.path) else { throw FolderError.missing }
+        let base = NoteNaming.folderName(for: base)
+        while true {
+            let name = NoteNaming.uniqueStem(base: base) { fileManager.fileExists(atPath: parentURL.appendingPathComponent($0).path) }
+            let url = parentURL.appendingPathComponent(name, isDirectory: true)
+            do {
+                try coordinate(writing: url, options: []) { try fileManager.createDirectory(at: $0, withIntermediateDirectories: false) }
+                return parent.appending(name)
+            } catch where fileManager.fileExists(atPath: url.path) {
+                continue // Taken between our check and the write.
+            }
+        }
+    }
+
+    /// Renames a folder; refuses a name another item beside it has.
+    public func renameFolder(_ folder: FolderPath, to newName: String) throws -> FolderPath {
+        try requireFolder()
+        guard let parent = folder.parent, let current = folder.name else { throw FolderError.missing }
+        let name = NoteNaming.folderName(for: newName)
+        guard name != current else { return folder }
+        let source = folderURL(folder)
+        let destination = folderURL(parent).appendingPathComponent(name, isDirectory: true)
+        let caseOnly = NoteNaming.stemsMatch(name, current)
+        if !caseOnly && fileManager.fileExists(atPath: destination.path) { throw FolderError.nameTaken(name) }
+        try exclusiveMove(source, to: destination, caseOnly: caseOnly)
+        return parent.appending(name)
+    }
+
+    /// Moves a folder, with everything in it, into `parent`. Refuses to move
+    /// it into itself or below, and onto an item of the same name: folders
+    /// are never merged.
+    public func moveFolder(_ folder: FolderPath, into parent: FolderPath) throws -> FolderPath {
+        try requireFolder()
+        guard let name = folder.name else { throw FolderError.missing }
+        if folder.contains(parent) { throw FolderError.intoItself }
+        if folder.parent == parent { return folder }
+        let destination = folderURL(parent).appendingPathComponent(name, isDirectory: true)
+        if fileManager.fileExists(atPath: destination.path) { throw FolderError.nameTaken(name) }
+        try exclusiveMove(folderURL(folder), to: destination, caseOnly: false)
+        return parent.appending(name)
+    }
+
+    /// Moves a note into another folder, under a free name there (a number
+    /// added); an auto-named note that had to take a new name stays auto-named.
+    public func moveNote(_ url: URL, to folder: FolderPath) throws -> URL {
+        try requireFolder()
+        let folderURL = folderURL(folder)
+        guard fileManager.fileExists(atPath: folderURL.path) else { throw FolderError.missing }
+        let base = url.deletingPathExtension().lastPathComponent
+        while true {
+            let stem = NoteNaming.uniqueStem(base: base) { stemTaken($0, in: folderURL) }
+            let destination = fileURL(stem: stem, ext: url.pathExtension, in: folderURL)
+            do {
+                try exclusiveMove(url, to: destination, caseOnly: false)
+            } catch let error as POSIXError where error.code == .EEXIST {
+                continue
+            }
+            if stem != base,
+               let tag = ExtendedAttributes.string(named: Self.autoNameAttribute, at: destination),
+               NoteNaming.stemsMatch(tag, base) {
+                self.tag(destination, with: stem)
+            }
+            return destination
+        }
+    }
+
+    /// Moves a folder, with everything in it, to the Trash as one item.
+    public func trashFolder(_ folder: FolderPath) throws -> URL? {
+        try requireFolder()
+        guard !folder.isRoot else { throw FolderError.missing }
+        var trashed: URL?
+        try coordinate(writing: folderURL(folder), options: .forDeleting) { trashed = try trashHandler($0) }
+        return trashed
+    }
+
+    /// Puts a trashed folder back into `parent` (made again if it's gone),
+    /// under a free name.
+    public func restoreFolder(_ trashedURL: URL, named name: String, in parent: FolderPath) throws -> FolderPath {
+        try requireFolder()
+        try prepare()
+        let parentURL = folderURL(parent)
+        try fileManager.createDirectory(at: parentURL, withIntermediateDirectories: true)
+        let free = NoteNaming.uniqueStem(base: name) { fileManager.fileExists(atPath: parentURL.appendingPathComponent($0).path) }
+        let destination = parentURL.appendingPathComponent(free, isDirectory: true)
+        if isUbiquitous, !fileManager.isUbiquitousItem(at: trashedURL) {
+            try fileManager.setUbiquitous(true, itemAt: trashedURL, destinationURL: destination)
+        } else {
+            try coordinate(moving: trashedURL, to: destination) { try fileManager.moveItem(at: $0, to: $1) }
+        }
+        return parent.appending(free)
+    }
+
+    /// Notes and other files in a folder and below: what trashing it takes.
+    /// iCloud notes not on this device yet count as notes.
+    public func contentsCount(of folder: FolderPath) -> (notes: Int, others: Int) {
+        guard let walker = fileManager.enumerator(at: folderURL(folder), includingPropertiesForKeys: [.isRegularFileKey]) else { return (0, 0) }
+        var notes = 0, others = 0
+        for case let url as URL in walker {
+            let name = url.lastPathComponent
+            if name.hasPrefix(".") {
+                if NoteNaming.placeholderTarget(name) != nil { notes += 1 }
+                walker.skipDescendants()
+                continue
+            }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            if NoteNaming.isNoteFile(url) { notes += 1 } else { others += 1 }
+        }
+        return (notes, others)
+    }
+
+    /// Renames or moves an item without ever replacing another; coordinated for iCloud.
+    private func exclusiveMove(_ source: URL, to destination: URL, caseOnly: Bool) throws {
+        try coordinate(moving: source, to: destination) { from, to in
+            let status = from.withUnsafeFileSystemRepresentation { src in
+                to.withUnsafeFileSystemRepresentation { dst -> Int32 in
+                    guard let src, let dst else { return -1 }
+                    return caseOnly ? Foundation.rename(src, dst) : renamex_np(src, dst, UInt32(RENAME_EXCL))
+                }
+            }
+            if status != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
     }
 
     // MARK: Vault
