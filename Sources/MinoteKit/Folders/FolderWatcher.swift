@@ -7,6 +7,9 @@ import Foundation
 public final class FolderWatcher: LibraryWatching {
     private let root: URL
     private var watchers: [URL: PathWatcher] = [:]
+    /// Each watcher holds a file descriptor: past this many folders, the
+    /// deepest go unwatched (coming back to the app rescans them anyway).
+    static let limit = 64
     private var onChange: (@MainActor () -> Void)?
     /// The folders the library last told about, watched once started.
     private var wanted: [URL] = []
@@ -30,7 +33,9 @@ public final class FolderWatcher: LibraryWatching {
     public func watch(folders: [URL]) {
         self.wanted = folders
         guard let onChange else { return }
-        let wanted = Set(folders.map(\.standardizedFileURL)).union([root.standardizedFileURL])
+        let rootURL = root.standardizedFileURL
+        let byDepth = folders.map(\.standardizedFileURL).filter { $0 != rootURL }.sorted { $0.pathComponents.count < $1.pathComponents.count }
+        let wanted = Set([rootURL] + byDepth.prefix(Self.limit - 1))
         for (url, watcher) in watchers where !wanted.contains(url) {
             watcher.stop()
             watchers[url] = nil

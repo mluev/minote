@@ -39,6 +39,19 @@ struct RootView: View {
         } message: {
             Text("The file keeps this name instead of following its first line.")
         }
+        .alert(trashTitle, isPresented: Binding(
+            get: { state.trashingFolder != nil },
+            set: { if !$0 { state.trashingFolder = nil } }
+        )) {
+            Button("Delete") {
+                guard let folder = state.trashingFolder?.folder else { return }
+                state.trashingFolder = nil
+                Task { await library.trashFolder(folder) }
+            }
+            Button("Cancel", role: .cancel) { state.trashingFolder = nil }
+        } message: {
+            Text("Everything in it goes too. Deleted items are kept for 30 days.")
+        }
         .alert("Rename Folder", isPresented: Binding(
             get: { state.renamingFolder != nil },
             set: { if !$0 { state.renamingFolder = nil } }
@@ -53,6 +66,14 @@ struct RootView: View {
             Button("Cancel", role: .cancel) { state.renamingFolder = nil }
         }
         .libraryErrorAlert(library)
+    }
+}
+
+extension RootView {
+    var trashTitle: String {
+        guard let pending = state.trashingFolder else { return "" }
+        let notes = pending.notes == 1 ? "1 note" : "\(pending.notes) notes"
+        return "Delete “\(pending.folder.name ?? "")” and its \(notes)?"
     }
 }
 
@@ -127,7 +148,7 @@ struct NotesList: View {
         switch row {
         case .folder(let path, let depth, let count, let isOpen):
             Button {
-                withAnimation(.snappy(duration: 0.2)) { preferences.toggle(path) }
+                preferences.toggle(path)
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.right")
@@ -149,7 +170,7 @@ struct NotesList: View {
             .accessibilityLabel(path.name ?? "")
             .accessibilityValue("\(isOpen ? "Open" : "Closed"), \(count) \(count == 1 ? "note" : "notes")")
             .swipeActions {
-                Button("Delete", systemImage: "trash", role: .destructive) { Task { await library.trashFolder(path, undoManager: undoManager) } }
+                Button("Delete", systemImage: "trash") { askToTrash(path) }
             }
             .contextMenu { folderMenu(path) }
         case .note(let note, let depth, let label):
@@ -157,7 +178,7 @@ struct NotesList: View {
                 .padding(.leading, CGFloat(depth) * 16)
                 .tag(note.id)
                 .swipeActions {
-                    Button("Delete", systemImage: "trash", role: .destructive) { trash(note) }
+                    Button("Delete", systemImage: "trash") { trash(note) }
                 }
                 .contextMenu { menu(for: note) }
         case .section(let title):
@@ -194,13 +215,24 @@ struct NotesList: View {
                 Toggle("Locked Notes Only", isOn: Bindable(preferences).view.lockedOnly)
             }
             Divider()
-            Button("New Folder", systemImage: "folder.badge.plus") { newFolder(in: state.scope) }
             Button("Reset to Defaults") {
                 preferences.view = .standard
                 library.setSort(nil, for: state.scope)
             }
         } label: {
             Label("View Options", systemImage: "line.3.horizontal.decrease.circle")
+        }
+    }
+
+    /// A folder with notes in it is deleted only once that's confirmed; an empty one at once.
+    private func askToTrash(_ folder: FolderPath) {
+        Task { @MainActor in
+            let contents = await library.contentsCount(of: folder)
+            if contents.notes + contents.others == 0 {
+                await library.trashFolder(folder, undoManager: undoManager)
+            } else {
+                state.trashingFolder = (folder, contents.notes)
+            }
         }
     }
 
@@ -225,8 +257,8 @@ struct NotesList: View {
             Task { await library.moveFolder(folder, into: parent, undoManager: undoManager) }
         }
         Divider()
-        Button("Delete", systemImage: "trash", role: .destructive) {
-            Task { await library.trashFolder(folder, undoManager: undoManager) }
+        Button("Delete", systemImage: "trash") {
+            askToTrash(folder)
         }
     }
 
@@ -258,7 +290,7 @@ struct NotesList: View {
             ShareLink(item: url)
         }
         Divider()
-        Button("Delete", systemImage: "trash", role: .destructive) { trash(note) }
+        Button("Delete", systemImage: "trash") { trash(note) }
     }
 
     private func trash(_ note: Note) {

@@ -491,7 +491,7 @@ enum DebugDriver {
                     .action("Open in New Tab", systemImage: "plus.square.on.square") {},
                     .divider,
                     .submenu("Move to", systemImage: "folder", [.action("Notes", checked: true) {}, .action("Work") {}]),
-                    .action("Move to Trash", systemImage: "trash", destructive: true) {},
+                    .action("Move to Trash", systemImage: "trash") {},
                 ]), at: CGPoint(x: x, y: y)))
             default: state.dismissOverlay()
             }

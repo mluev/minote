@@ -46,6 +46,9 @@ final class WindowState {
     var sidebarSelection: Set<String> = []
     /// Where a Shift selection started.
     @ObservationIgnored var selectionAnchor: String?
+    /// Bumped by File ▸ Move to Trash (⌘⌫) while the sidebar has the keyboard:
+    /// the sidebar trashes what's picked, the folder it's on, or the note.
+    var sidebarDeleteRequest = 0
     /// Views offering our own menu on a right-click: given the point (window
     /// coordinates, from the top left), the items, or nil when it isn't theirs.
     @ObservationIgnored var secondaryClickHandlers: [String: (CGPoint) -> [ChromeMenuItem]?] = [:]

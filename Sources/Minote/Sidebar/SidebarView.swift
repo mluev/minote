@@ -102,17 +102,8 @@ struct SidebarView: View {
             }
             return .handled
         }
-        .onDeleteCommand {
-            // Behind the Whole Library lock screen, the list may still have focus.
-            guard !library.isLibraryLocked else { return }
-            if !state.sidebarSelection.isEmpty {
-                trashSelection()
-            } else if let folder = cursorFolder(in: rows) {
-                trashFolder(folder)
-            } else if let id = selectedID, library.note(with: id) != nil {
-                trash(id)
-            }
-        }
+        .onDeleteCommand { deleteFromKeyboard(in: rows) }
+        .onChange(of: state.sidebarDeleteRequest) { deleteFromKeyboard(in: geometry.rows) }
         .onChange(of: state.sidebarFocusRequest) {
             isListFocused = true
         }
@@ -245,10 +236,17 @@ struct SidebarView: View {
             geometry.scheduleOpening(nil) { _ in }
             return
         }
+        let group: [SidebarDragItem] = (current.group ?? []).isEmpty ? [] : geometry.rows.compactMap { row in
+            guard current.group?.contains(row.id) == true else { return nil }
+            switch row {
+            case .note(let note, _, _): return .note(note)
+            case .folder(let path, _, _, _): return .folder(path)
+            case .section: return nil
+            }
+        }
         let drop = SidebarDrop.resolve(
-            rows: visible, frames: frames, y: pointer.y, dragging: current.item, ordering: library.ordering, scope: state.scope,
-            isFolderView: preferences.view.groupBy == .folder,
-            isSearching: !library.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            rows: visible, frames: frames, y: pointer.y, dragging: current.item, group: group, ordering: library.ordering,
+            scope: state.scope, isFolderView: preferences.view.groupBy == .folder, isSearching: false
         )
         current.drop = drop
         if let line = drop?.line {
@@ -372,6 +370,19 @@ struct SidebarView: View {
             toggle(folder)
         } else if let next = SidebarRows.row(from: current, offset: 1, in: rows), next.depth > row.depth {
             go(to: next)
+        }
+    }
+
+    /// ⌫ or ⌘⌫: what's picked, else the folder the keyboard is on, else the open note.
+    private func deleteFromKeyboard(in rows: [SidebarRow]) {
+        // Behind the Whole Library lock screen, the list may still have focus.
+        guard !library.isLibraryLocked else { return }
+        if !state.sidebarSelection.isEmpty {
+            trashSelection()
+        } else if let folder = cursorFolder(in: rows) {
+            trashFolder(folder)
+        } else if let id = selectedID, library.note(with: id) != nil {
+            trash(id)
         }
     }
 
@@ -617,7 +628,7 @@ struct SidebarView: View {
                 if let url = note.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             },
             .divider,
-            .action("Move to Trash", systemImage: "trash", destructive: true) { trash(note.id) },
+            .action("Move to Trash", systemImage: "trash") { trash(note.id) },
         ]
         return items
     }
@@ -642,7 +653,7 @@ struct SidebarView: View {
             },
             .action("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([library.url(of: folder)]) },
             .divider,
-            .action("Move to Trash", systemImage: "trash", destructive: true) { trashFolder(folder) },
+            .action("Move to Trash", systemImage: "trash") { trashFolder(folder) },
         ]
     }
 

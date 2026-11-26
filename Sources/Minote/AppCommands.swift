@@ -133,11 +133,11 @@ struct AppCommands: Commands {
             Divider()
             // ⌘⌫ only while the list has focus; in the editor it deletes to the start of the line.
             Button("Move to Trash") {
-                guard let id = frontLibraryNote?.id else { return }
-                library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
+                // The sidebar decides: what's picked, the folder it's on, or the open note.
+                frontWindow?.sidebarDeleteRequest += 1
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil || library.isLibraryLocked)
+            .disabled(!(frontWindow?.isSidebarFocused ?? false) || library.isLibraryLocked)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
@@ -153,6 +153,9 @@ struct AppCommands: Commands {
 
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
+            Button("Go to Sidebar") { workspace.focusSidebar() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(library.isLibraryLocked)
             Button("Search…") { workspace.showSearch() }
                 .keyboardShortcut("j")
                 .disabled(library.isLibraryLocked)

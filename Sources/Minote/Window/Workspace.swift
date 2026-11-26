@@ -216,6 +216,15 @@ final class Workspace {
         }
     }
 
+    /// Edit ▸ Go to Sidebar: the sidebar shows and takes the keyboard, so the
+    /// arrows walk the library from the open note.
+    func focusSidebar() {
+        guard let window = frontWindow ?? targetWindow else { return }
+        _ = loadLibrary()
+        window.state.isSidebarVisible = true
+        window.state.sidebarFocusRequest += 1
+    }
+
     /// Edit ▸ Search…: the search palette over the front window (a library
     /// window is opened if there's none), or closes it if it's showing.
     func showSearch() {

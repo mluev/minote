@@ -332,14 +332,16 @@ extension Library {
         unreadableSettings = Set(unreadableSettings.map { old.rebasing($0, onto: new) })
         // Order changes queued during the command were addressed to the old
         // place: write what's known now where the folders are now.
-        for (folder, settings) in folderSettings where new.contains(folder) { writeSettings(settings, for: folder) }
+        for (folder, settings) in folderSettings where new.contains(folder) && !unreadableSettings.contains(folder) {
+            writeSettings(settings, for: folder)
+        }
         if let selected = selectedNote, new.contains(selected.folder) { persistSelection() }
         organisationHandler?(.folderMoved(from: old, to: new))
     }
 
     /// A child of `folder` changed its name: its place in the manual order stays.
     func renameOrderKey(in folder: FolderPath, from old: String?, to new: String?, isFolder: Bool = false) {
-        guard let old, let new, old != new, var settings = folderSettings[folder] else { return }
+        guard let old, let new, old != new, !unreadableSettings.contains(folder), var settings = folderSettings[folder] else { return }
         let oldKey = isFolder ? old : FolderSettings.key(forNote: old)
         let newKey = isFolder ? new : FolderSettings.key(forNote: new)
         guard let index = settings.order.firstIndex(where: { FolderOrdering.normalized($0) == FolderOrdering.normalized(oldKey) }) else { return }
@@ -348,7 +350,7 @@ extension Library {
     }
 
     private func removeOrderKey(_ key: String?, from folder: FolderPath) {
-        guard let key, var settings = folderSettings[folder] else { return }
+        guard let key, !unreadableSettings.contains(folder), var settings = folderSettings[folder] else { return }
         let before = settings.order.count
         settings.order.removeAll { FolderOrdering.normalized($0) == FolderOrdering.normalized(key) }
         if settings.order.count != before { writeSettings(settings, for: folder) }
@@ -357,8 +359,10 @@ extension Library {
     /// A newcomer to a folder ordered by hand goes at `index` among its
     /// children (at the top without one); `asStored` takes `index` as a place
     /// in the stored order instead.
+    /// A folder whose settings file can't be read (newer, damaged, or not
+    /// downloaded yet) is left alone: its order isn't known to add to.
     private func insertOrderKey(_ key: String?, into folder: FolderPath, at index: Int?, asStored: Bool = false) {
-        guard let key, sortOrder(of: folder).sort == .manual else { return }
+        guard let key, !unreadableSettings.contains(folder), sortOrder(of: folder).sort == .manual else { return }
         var settings = folderSettings[folder] ?? FolderSettings()
         var order: [String]
         if asStored {
@@ -436,6 +440,7 @@ extension Library {
     @discardableResult
     public func moveItems(_ items: [LibraryEntry], to folder: FolderPath, undoManager: UndoManager? = nil) async -> Int {
         var undo: [(item: LibraryEntry, back: FolderPath)] = []
+        var intoThemselves: [String] = []
         for item in outermost(items) {
             switch item {
             case .note(let id):
@@ -443,9 +448,19 @@ extension Library {
                 let old = note.folder
                 if await moveNote(id, to: folder) { undo.append((.note(id), old)) }
             case .folder(let path):
-                guard let parent = path.parent, parent != folder, !path.contains(folder) else { continue }
+                guard let parent = path.parent, parent != folder else { continue }
+                guard !path.contains(folder) else {
+                    intoThemselves.append("“\(path.name ?? "")”")
+                    continue
+                }
                 if let moved = await moveFolder(path, into: folder) { undo.append((.folder(moved), parent)) }
             }
+        }
+        if !intoThemselves.isEmpty {
+            presentedError = LibraryError(
+                title: intoThemselves.count == 1 ? "\(intoThemselves[0]) stayed where it was" : "\(intoThemselves.count) folders stayed where they were",
+                message: "A folder can't go inside itself: \(intoThemselves.joined(separator: ", ")). Everything else moved."
+            )
         }
         if !undo.isEmpty, let undoManager {
             undoManager.registerUndo(withTarget: self) { library in
@@ -472,9 +487,12 @@ extension Library {
         for item in outermost(items) {
             switch item {
             case .note(let id):
-                guard note(with: id) != nil else { continue }
+                guard let note = note(with: id) else { continue }
+                let receipt = await moveToTrash(id)
+                // A draft has nothing to put back; a note still listed didn't go.
+                guard !contains(note) else { continue }
                 count += 1
-                if let receipt = await moveToTrash(id) { notes.append(receipt) }
+                if let receipt { notes.append(receipt) }
             case .folder(let path):
                 if let receipt = await trashFolder(path) {
                     folders.append(receipt)

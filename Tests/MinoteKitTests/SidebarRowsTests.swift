@@ -202,3 +202,32 @@ struct SidebarRowsTests {
         #expect(drop(library, rows, y: 130, loose, searching: true) == nil)
     }
 }
+
+@MainActor
+@Suite("Dropping several")
+struct GroupDropTests {
+    @Test func aGroupIsCheckedAsAWhole() async throws {
+        let folder = try TemporaryLibrary()
+        try folder.write("A", to: "Work/A.md")
+        try folder.write("B", to: "B.md")
+        try folder.write("C", to: "Archive/C.md")
+        let library = Library(store: folder.makeStore(), timing: .fast, defaults: freshDefaults())
+        await library.load()
+        let rows = SidebarRows.build(.init(notes: library.notes.filter { !$0.isDraft }, folders: library.folders, settings: [:]))
+        let frames = rows.indices.map { CGRect(x: 0, y: CGFloat($0) * 20, width: 200, height: 20) }
+        let a = SidebarDragItem.note(try #require(library.note(atPath: "Work/A.md")))
+        let b = SidebarDragItem.note(try #require(library.note(atPath: "B.md")))
+        let work = FolderPath(string: "Work")
+        let workRow = try #require(rows.firstIndex { $0.folder == work })
+        let middle = CGFloat(workRow) * 20 + 10
+        func drop(_ item: SidebarDragItem, _ group: [SidebarDragItem]) -> SidebarDrop? {
+            SidebarDrop.resolve(rows: rows, frames: frames, y: middle, dragging: item, group: group, ordering: library.ordering,
+                                scope: .root, isFolderView: true, isSearching: false)
+        }
+        // A alone onto its own folder: nothing. With B along: B moves in.
+        #expect(drop(a, []) == nil)
+        #expect(drop(a, [a, b])?.target == .into(work))
+        // A folder in the group can't go into itself.
+        #expect(drop(a, [a, .folder(work)]) == nil)
+    }
+}

@@ -113,7 +113,7 @@ struct ChromeOverlayLayer: View {
         switch overlay {
         case .menu(let menu, let point):
             Placed(at: point, in: size) {
-                ChromeMenuView(menu: menu, palette: palette) { state.dismissOverlay() }
+                ChromeMenuView(menu: menu, palette: palette, maxHeight: size.height - 16) { state.dismissOverlay() }
             }
             .transition(ChromeMotion.transition(from: .topLeading))
             .id(menu.id)

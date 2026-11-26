@@ -130,6 +130,9 @@ public struct FolderOrdering {
 
     private let notesByFolder: [FolderPath: [Note]]
     private let subfolders: [FolderPath: [FolderPath]]
+    /// The newest last-updated and created dates under each folder, worked
+    /// out once: sorting compares them again and again.
+    private let newest: [FolderPath: (modified: Date, created: Date)]
 
     public init(notes: [Note], folders: [FolderPath], settings: [FolderPath: FolderSettings]) {
         self.notes = notes
@@ -141,6 +144,17 @@ public struct FolderOrdering {
             if let parent = folder.parent { subfolders[parent, default: []].append(folder) }
         }
         self.subfolders = subfolders
+        var newest: [FolderPath: (modified: Date, created: Date)] = [:]
+        for note in notes where !note.isDraft {
+            // Every folder above the note counts it.
+            var current: FolderPath? = note.folder
+            while let folder = current {
+                let known = newest[folder] ?? (.distantPast, .distantPast)
+                newest[folder] = (max(known.modified, note.modified), max(known.created, note.created))
+                current = folder.parent
+            }
+        }
+        self.newest = newest
     }
 
     /// The order a folder uses: its own, else the nearest folder above's,
@@ -215,10 +229,13 @@ public struct FolderOrdering {
         name(of: a).localizedStandardCompare(name(of: b)) == .orderedAscending
     }
 
+    /// By file name: it follows the title, but changes when a note is saved,
+    /// not with every keystroke in its first line (the list isn't rebuilt
+    /// while typing). Drafts aren't sorted this way.
     private func title(of child: FolderChild) -> String {
         switch child {
         case .folder(let path): path.name ?? ""
-        case .note(let note): note.displayTitle
+        case .note(let note): note.fileStem ?? note.displayTitle
         }
     }
 
@@ -234,7 +251,7 @@ public struct FolderOrdering {
         switch child {
         case .note(let note): sort == .created ? note.created : note.modified
         case .folder(let path):
-            notes(under: path).map { sort == .created ? $0.created : $0.modified }.max() ?? .distantPast
+            newest[path].map { sort == .created ? $0.created : $0.modified } ?? .distantPast
         }
     }
 

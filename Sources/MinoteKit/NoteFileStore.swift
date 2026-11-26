@@ -250,6 +250,8 @@ public actor NoteFileStore {
                 if name.hasPrefix(".") {
                     // A note, or a folder's settings, that isn't on this device yet: ask iCloud for it.
                     if isUbiquitous, name == ".\(FolderSettings.fileName).icloud" {
+                        // Not here yet: never written over in the meantime.
+                        if result.settings[folder] == nil { result.settings[folder] = .unreadable }
                         try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: FolderSettings.fileName, in: folderURL))
                     } else if isUbiquitous, let real = NoteNaming.placeholderTarget(name) {
                         try? fileManager.startDownloadingUbiquitousItem(at: fileURL(named: real, in: folderURL))
@@ -727,11 +729,6 @@ public actor NoteFileStore {
     /// these, so the same file always gets an equal URL.
     public nonisolated func folderURL(_ folder: FolderPath) -> URL {
         folder.url(in: directory)
-    }
-
-    /// The library folder a file of the library is in.
-    public nonisolated func folder(of url: URL) -> FolderPath {
-        FolderPath(folderOf: url, root: directory) ?? .root
     }
 
     nonisolated func fileURL(named name: String, in folderURL: URL) -> URL {

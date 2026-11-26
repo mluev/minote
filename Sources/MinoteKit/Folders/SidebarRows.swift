@@ -289,7 +289,9 @@ public struct SidebarDrop: Equatable, Sendable {
     /// dropped: in flat lists, while searching, a folder into itself or below
     /// it, or where the item already is.
     @MainActor
+    /// `group`: every item dragged, when several picked rows go together.
     public static func resolve(rows: [SidebarRow], frames: [CGRect], y: CGFloat, dragging item: SidebarDragItem,
+                               group: [SidebarDragItem] = [],
                                ordering: FolderOrdering, scope: FolderPath, isFolderView: Bool, isSearching: Bool) -> SidebarDrop? {
         guard isFolderView, !isSearching, rows.count == frames.count else { return nil }
 
@@ -297,7 +299,7 @@ public struct SidebarDrop: Equatable, Sendable {
         if let index = frames.firstIndex(where: { y >= $0.minY && y < $0.maxY }), case .folder(let path, _, _, _) = rows[index] {
             let frame = frames[index]
             if y > frame.minY + frame.height * 0.25 && y < frame.maxY - frame.height * 0.25 {
-                return validated(SidebarDrop(target: .into(path), highlight: path, line: nil), item: item, ordering: ordering)
+                return validated(SidebarDrop(target: .into(path), highlight: path, line: nil), item: item, group: group, ordering: ordering)
             }
         }
 
@@ -305,7 +307,7 @@ public struct SidebarDrop: Equatable, Sendable {
         if let last = frames.last, y > last.maxY + 8 {
             let drop = SidebarDrop(target: .at(scope, index: ordering.children(of: scope).count), highlight: nil,
                                    line: (rows.count - 1, 0))
-            return validated(drop, item: item, ordering: ordering)
+            return validated(drop, item: item, group: group, ordering: ordering)
         }
 
         // Otherwise the gap nearest the pointer, between `above` and `below`.
@@ -328,7 +330,7 @@ public struct SidebarDrop: Equatable, Sendable {
             target = .at(scope, index: 0)
             depth = 0
         }
-        return validated(SidebarDrop(target: target, highlight: nil, line: (above, depth)), item: item, ordering: ordering)
+        return validated(SidebarDrop(target: target, highlight: nil, line: (above, depth)), item: item, group: group, ordering: ordering)
     }
 
     /// Applies the rules: no folder into itself or below; nothing where the
@@ -336,11 +338,20 @@ public struct SidebarDrop: Equatable, Sendable {
     /// lands where the sort puts it, so its sort never changes behind the
     /// writer's back.
     @MainActor
-    private static func validated(_ drop: SidebarDrop, item: SidebarDragItem, ordering: FolderOrdering) -> SidebarDrop? {
+    private static func validated(_ drop: SidebarDrop, item: SidebarDragItem, group: [SidebarDragItem],
+                                  ordering: FolderOrdering) -> SidebarDrop? {
         let destination: FolderPath
         switch drop.target {
         case .into(let folder): destination = folder
         case .at(let folder, _): destination = folder
+        }
+        // Several together go into a folder (no place among its children):
+        // nowhere one of them is a folder holding it, and not where all of
+        // them already are.
+        if group.count > 1 {
+            if group.contains(where: { $0.folder?.contains(destination) == true }) { return nil }
+            if group.allSatisfy({ $0.parent == destination }) { return nil }
+            return SidebarDrop(target: .into(destination), highlight: destination.isRoot ? nil : destination, line: nil)
         }
         if let moving = item.folder, moving.contains(destination) { return nil }
 

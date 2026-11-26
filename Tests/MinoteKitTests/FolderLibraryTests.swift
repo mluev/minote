@@ -36,9 +36,6 @@ struct FolderLibraryTests {
         #expect(clients.relativePath(ofFile: "A.md") == "Work/Clients/A.md")
         #expect(FolderPath.root.relativePath(ofFile: "A.md") == "A.md")
         #expect(FolderPath(string: "/Work//Clients/") == clients)
-        let root = URL(fileURLWithPath: "/tmp/lib", isDirectory: true)
-        #expect(FolderPath(folderOf: root.appendingPathComponent("Work/Clients/A.md"), root: root) == clients)
-        #expect(FolderPath(folderOf: URL(fileURLWithPath: "/elsewhere/A.md"), root: root) == nil)
     }
 
     // MARK: Scanning

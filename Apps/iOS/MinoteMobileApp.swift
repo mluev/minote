@@ -150,6 +150,8 @@ final class MobileState {
     }
     /// The folder alert's text field.
     var folderNameText = ""
+    /// A folder with notes in it, waiting for the delete to be confirmed.
+    var trashingFolder: (folder: FolderPath, notes: Int)?
 
     /// Folders renamed, moved or trashed: closed folders and the folder
     /// looked into follow.

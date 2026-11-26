@@ -18,14 +18,6 @@ public struct FolderPath: Hashable, Sendable, Comparable, CustomStringConvertibl
         self.init(string.split(separator: "/").map(String.init))
     }
 
-    /// The folder holding `url`, if it lies inside `root`.
-    public init?(folderOf url: URL, root: URL) {
-        let parent = url.standardizedFileURL.deletingLastPathComponent().pathComponents
-        let base = root.standardizedFileURL.pathComponents
-        guard parent.count >= base.count, Array(parent.prefix(base.count)) == base else { return nil }
-        self.init(Array(parent.dropFirst(base.count)))
-    }
-
     public var string: String { components.joined(separator: "/") }
     public var description: String { string.isEmpty ? "/" : string }
     public var isRoot: Bool { components.isEmpty }

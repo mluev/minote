@@ -24,7 +24,6 @@ struct ChromeMenuItem: Identifiable {
     /// On the right: a current value or a shortcut.
     var detail: String?
     var isChecked = false
-    var isDestructive = false
     var isEnabled = true
     /// Levels it steps in, for a tree of folders.
     var indent = 0
@@ -35,9 +34,9 @@ struct ChromeMenuItem: Identifiable {
     var submenu: [ChromeMenuItem]? { if case .submenu(let items) = kind { items } else { nil } }
 
     static func action(_ title: String, systemImage: String? = nil, detail: String? = nil, checked: Bool = false,
-                       destructive: Bool = false, enabled: Bool = true, indent: Int = 0, _ run: @escaping () -> Void) -> ChromeMenuItem {
+                       enabled: Bool = true, indent: Int = 0, _ run: @escaping () -> Void) -> ChromeMenuItem {
         ChromeMenuItem(title: title, systemImage: systemImage, detail: detail, isChecked: checked,
-                       isDestructive: destructive, isEnabled: enabled, indent: indent, kind: .action(run))
+                       isEnabled: enabled, indent: indent, kind: .action(run))
     }
 
     static func submenu(_ title: String, systemImage: String? = nil, detail: String? = nil, enabled: Bool = true,
@@ -67,6 +66,8 @@ enum ChromeMenuMetrics {
 struct ChromeMenuView: View {
     let menu: ChromeMenu
     let palette: EditorPalette
+    /// The window's room: a longer menu scrolls, and a submenu stays inside it.
+    var maxHeight: CGFloat = .infinity
     let dismiss: () -> Void
 
     /// For each open level, the highlighted row.
@@ -90,7 +91,7 @@ struct ChromeMenuView: View {
         HStack(alignment: .top, spacing: -2) {
             ForEach(Array(levels.enumerated()), id: \.offset) { level, items in
                 panel(items, level: level)
-                    .padding(.top, level == 0 ? 0 : offset(ofLevel: level, in: levels))
+                    .padding(.top, level == 0 ? 0 : min(offset(ofLevel: level, in: levels), max(0, maxHeight - height(of: items))))
                     .transition(ChromeMotion.reduceMotion ? .opacity : .opacity.combined(with: .offset(x: -6)))
                     .zIndex(Double(level))
             }
@@ -115,7 +116,27 @@ struct ChromeMenuView: View {
         }
     }
 
+    /// A menu's height on screen: all its rows, or the window's room.
+    private func height(of items: [ChromeMenuItem]) -> CGFloat {
+        min(ChromeMenuMetrics.top(of: items.count, in: items) + ChromeMenuMetrics.inset, maxHeight)
+    }
+
+    @ViewBuilder
     private func panel(_ items: [ChromeMenuItem], level: Int) -> some View {
+        let fullHeight = ChromeMenuMetrics.top(of: items.count, in: items) + ChromeMenuMetrics.inset
+        if fullHeight > maxHeight {
+            ScrollView(.vertical) { rows(items, level: level) }
+                .scrollIndicators(.hidden)
+                .frame(height: maxHeight)
+                .fixedSize(horizontal: true, vertical: false)
+                .chromeSurface(palette, cornerRadius: 10)
+        } else {
+            rows(items, level: level)
+                .chromeSurface(palette, cornerRadius: 10)
+        }
+    }
+
+    private func rows(_ items: [ChromeMenuItem], level: Int) -> some View {
         let showsLeading = items.contains { $0.isChecked || $0.systemImage != nil }
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -133,7 +154,6 @@ struct ChromeMenuView: View {
         .padding(ChromeMenuMetrics.inset)
         .frame(minWidth: ChromeMenuMetrics.minWidth, maxWidth: ChromeMenuMetrics.maxWidth, alignment: .leading)
         .fixedSize()
-        .chromeSurface(palette, cornerRadius: 10)
     }
 
     private func row(_ item: ChromeMenuItem, index: Int, level: Int, showsLeading: Bool) -> some View {

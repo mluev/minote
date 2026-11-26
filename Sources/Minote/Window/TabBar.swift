@@ -104,6 +104,8 @@ private struct TabStrip: View {
                     .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
                         state.strip = TabStripGeometry(frame: frame, tabWidth: layout.tabWidth, scrollOffset: scrollOffset)
                     }
+                    .onAppear { state.secondaryClickHandlers["tabs"] = menuItems(at:) }
+                    .onDisappear { state.secondaryClickHandlers["tabs"] = nil }
                     .onChange(of: state.selectedTab?.id, initial: true) { _, id in
                         guard let id, layout.scrolls else { return }
                         withAnimation(.smooth(duration: 0.25)) { scroller.scrollTo(id) }
@@ -160,7 +162,6 @@ private struct TabStrip: View {
             }
         }
         .gesture(dragGesture(tab, at: index, layout: layout))
-        .contextMenu { contextMenu(for: tab) }
     }
 
     // MARK: Dragging
@@ -237,33 +238,43 @@ private struct TabStrip: View {
 
     // MARK: Menu
 
-    @ViewBuilder
-    private func contextMenu(for tab: PageTab) -> some View {
-        Button("Close Tab") { page.close(tab) }
-        Button("Close Other Tabs") { page.closeOtherTabs(than: tab) }
-            .disabled(page.tabs.count < 2)
-        Button("Close Tabs to the Right") { page.closeTabs(after: tab) }
-            .disabled(page.tabs.last === tab)
-        Divider()
+    /// A right-click on a tab: our menu for it.
+    private func menuItems(at point: CGPoint) -> [ChromeMenuItem]? {
+        guard showsTabs, let strip = state.strip, strip.frame.contains(point), strip.tabWidth > 0 else { return nil }
+        let index = Int((point.x - strip.frame.minX + strip.scrollOffset) / strip.tabWidth)
+        guard state.tabs.indices.contains(index) else { return nil }
+        return menuItems(for: state.tabs[index])
+    }
+
+    private func menuItems(for tab: PageTab) -> [ChromeMenuItem] {
+        var items: [ChromeMenuItem] = [
+            .action("Close Tab", systemImage: "xmark", detail: "⌘W") { page.close(tab) },
+            .action("Close Other Tabs", enabled: page.tabs.count > 1) { page.closeOtherTabs(than: tab) },
+            .action("Close Tabs to the Right", enabled: page.tabs.last !== tab) { page.closeTabs(after: tab) },
+            .divider,
+        ]
         if tab.isUntouched {
-            Button("Keep Open") { tab.isEdited = true }
+            items.append(.action("Keep Open", systemImage: "pin") { tab.isEdited = true })
         }
-        Button("Move Tab to New Window") { workspace.moveToNewWindow(tab) }
-            .disabled(page.tabs.count < 2)
+        items.append(.action("Move Tab to New Window", systemImage: "macwindow.badge.plus", enabled: page.tabs.count > 1) {
+            workspace.moveToNewWindow(tab)
+        })
         if tab.isLibraryTab, let note = tab.note, !note.isBlankDraft {
-            Divider()
+            items.append(.divider)
             if note.isLocked {
-                Button("Remove Lock") { workspace.removeLock(note.id) }
-                    .disabled(note.isSealed || workspace.library.lockScope == .library)
+                items.append(.action("Remove Lock", systemImage: "lock.open",
+                                     enabled: !note.isSealed && workspace.library.lockScope != .library) { workspace.removeLock(note.id) })
             } else {
-                Button("Lock Note") { workspace.lockNote(note.id, in: state) }
+                items.append(.action("Lock Note", systemImage: "lock") { workspace.lockNote(note.id, in: state) })
             }
         }
-        Divider()
-        Button("Show in Finder") {
-            if let url = tab.file?.url ?? tab.note?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-        }
-        .disabled(tab.file == nil && tab.note?.fileURL == nil)
+        items += [
+            .divider,
+            .action("Show in Finder", systemImage: "folder", enabled: tab.file != nil || tab.note?.fileURL != nil) {
+                if let url = tab.file?.url ?? tab.note?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            },
+        ]
+        return items
     }
 }
 
