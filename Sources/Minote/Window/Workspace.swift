@@ -39,6 +39,8 @@ final class Workspace {
     /// Where the open tabs are kept: the driver's own suite under the debug
     /// driver, so its tabs never replace the real app's.
     @ObservationIgnored private let tabDefaults: UserDefaults
+    /// The sidebar's view and closed folders, shared by every window.
+    let sidebar: SidebarPreferences
 
     init() {
         var directory = LibraryLocation.defaultDirectory()
@@ -69,11 +71,27 @@ final class Workspace {
         #endif
         lock = LockController(library: library, biometrics: biometrics, defaults: defaults)
         tabDefaults = defaults
+        sidebar = SidebarPreferences(defaults: defaults)
         library.openHandler = { [weak self] id in self?.open(note: id) }
+        library.organisationHandler = { [weak self] change in self?.follow(change) }
         library.shownNoteRemovedHandler = { [weak self] editor in self?.closeTab(showing: editor) ?? false }
     }
 
     var hasWindows: Bool { !windows.isEmpty }
+
+    /// A right-click (or Control-click) in one of our windows: its views'
+    /// own menus, never the system's. Returns whether it was taken.
+    func handleSecondaryClick(_ event: NSEvent) -> Bool {
+        guard let page = windows.first(where: { $0.window === event.window }), let content = page.window.contentView else { return false }
+        let location = content.convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: location.x, y: content.isFlipped ? location.y : content.bounds.height - location.y)
+        return page.state.secondaryClick(at: point)
+    }
+
+    /// The window a window state belongs to.
+    func window(for state: WindowState) -> PageWindow? {
+        windows.first { $0.state === state }
+    }
 
     /// The tab the menus act on: the front window's.
     var frontTab: PageTab? { frontWindow?.selectedTab }
@@ -163,7 +181,7 @@ final class Workspace {
     func newTab(in window: PageWindow? = nil) {
         Task { @MainActor in
             await loadLibrary().value
-            guard let id = library.makeDraft() else { return }
+            guard let id = library.makeDraft(in: currentFolder(in: window ?? targetWindow)) else { return }
             let tab = makeTab(.library)
             library.show(id, in: tab.editor)
             if let window = window ?? targetWindow {
@@ -179,19 +197,85 @@ final class Workspace {
     }
 
     /// File ▸ New Note: a new draft where notes open, or the empty one in
-    /// front. `locked`: File ▸ New Locked Note, sealed from its first save.
-    func newNote(locked: Bool = false) {
+    /// front, in `folder` or the current one (`currentFolder`). `locked`:
+    /// File ▸ New Locked Note, sealed from its first save.
+    func newNote(locked: Bool = false, in folder: FolderPath? = nil) {
         Task { @MainActor in
             await loadLibrary().value
+            let folder = folder ?? currentFolder(in: targetWindow)
             if let tab = targetWindow?.selectedTab, tab.isLibraryTab, let note = tab.note, note.isDraft, !note.isSealed,
                note.isLocked == (locked || library.lockScope == .library),
                tab.editor.currentText().isBlank, let window = tab.window {
+                if note.folder != folder { await library.moveNote(note.id, to: folder) }
                 window.bringForward(tab)
                 return
             }
-            guard let id = library.makeDraft(locked: locked) else { return }
+            guard let id = library.makeDraft(locked: locked, in: folder) else { return }
+            if !folder.isRoot { sidebar.reveal(folder) }
             open(note: id)
         }
+    }
+
+    /// Edit ▸ Go to Sidebar: the sidebar shows and takes the keyboard, so the
+    /// arrows walk the library from the open note.
+    func focusSidebar() {
+        guard let window = frontWindow ?? targetWindow else { return }
+        _ = loadLibrary()
+        window.state.isSidebarVisible = true
+        window.state.sidebarFocusRequest += 1
+    }
+
+    /// Edit ▸ Search…: the search palette over the front window (a library
+    /// window is opened if there's none), or closes it if it's showing.
+    func showSearch() {
+        if frontWindow == nil && targetWindow == nil { showLibrary() }
+        guard let window = frontWindow ?? targetWindow else { return }
+        _ = loadLibrary()
+        window.window.makeKeyAndOrderFront(nil)
+        window.state.toggle(.search)
+    }
+
+    /// Where a new note or folder goes: the folder the window's sidebar looks
+    /// into, else the folder of the note in front, else the top.
+    func currentFolder(in window: PageWindow?) -> FolderPath {
+        guard let window else { return .root }
+        if !window.state.scope.isRoot { return window.state.scope }
+        if let tab = window.state.selectedTab, tab.isLibraryTab, let note = tab.note, library.folders.contains(note.folder) {
+            return note.folder
+        }
+        return .root
+    }
+
+    /// File ▸ New Folder and the sidebar's button: a folder in `parent` (the
+    /// folder the sidebar looks into), named in its row right away.
+    func newFolder(in parent: FolderPath? = nil, window: PageWindow? = nil) {
+        Task { @MainActor in
+            await loadLibrary().value
+            let window = window ?? targetWindow
+            let parent = parent ?? window?.state.scope ?? .root
+            guard let folder = await library.newFolder(in: parent) else { return }
+            sidebar.reveal(folder)
+            window?.state.isSidebarVisible = true
+            window?.state.renamingFolder = folder
+        }
+    }
+
+    /// Folders renamed, moved or trashed: closed folders, the folders windows
+    /// look into and the kept tabs follow.
+    private func follow(_ change: OrganisationChange) {
+        sidebar.follow(change)
+        for window in windows {
+            switch change {
+            case .folderMoved(let from, let to):
+                window.state.scope = from.rebasing(window.state.scope, onto: to)
+                if let renaming = window.state.renamingFolder { window.state.renamingFolder = from.rebasing(renaming, onto: to) }
+            case .folderRemoved(let folder):
+                while folder.contains(window.state.scope), let parent = window.state.scope.parent { window.state.scope = parent }
+            case .noteMoved:
+                break
+            }
+        }
+        tabsDidChange()
     }
 
     // MARK: Locking
@@ -582,12 +666,12 @@ final class Workspace {
         // tabs) leaves the last session's tabs alone.
         guard library.isLoaded, !restoresTabs else { return }
         let saved = orderedWindows.compactMap { window -> SavedTabs.Window? in
-            let names = window.tabs.map(\.fileName)
+            let names = window.tabs.map(\.relativePath)
             let kept = names.compactMap { $0 }
             guard !kept.isEmpty else { return nil }
             let selected = window.selectedTab.flatMap(window.index(of:)) ?? 0
             let front = names.prefix(selected).compactMap { $0 }.count
-            let untouched = window.tabs.filter(\.isUntouched).compactMap(\.fileName)
+            let untouched = window.tabs.filter(\.isUntouched).compactMap(\.relativePath)
             return SavedTabs.Window(notes: kept, front: min(front, kept.count - 1), untouched: untouched.isEmpty ? nil : untouched)
         }
         SavedTabs(windows: saved).save(to: tabDefaults)
@@ -600,7 +684,7 @@ final class Workspace {
         let libraryTabs = allTabs.filter(\.isLibraryTab)
         guard restoresTabs, library.isLoaded, !libraryTabs.isEmpty else { return }
         restoresTabs = false
-        let names = Set(library.notes.compactMap { $0.fileURL?.lastPathComponent })
+        let names = Set(library.notes.compactMap(\.relativePath))
         guard libraryTabs.count == 1, let first = libraryTabs.first, !first.isEdited, let firstWindow = first.window,
               let saved = SavedTabs.load(from: tabDefaults)?.restored(existing: names), !saved.windows.isEmpty else { return }
 
@@ -608,7 +692,7 @@ final class Workspace {
         // Back to front, so the window that was in front ends up there.
         for (index, savedWindow) in saved.windows.enumerated().reversed() {
             let notes = savedWindow.notes.compactMap { name in
-                library.notes.first { $0.fileURL?.lastPathComponent == name }.map { (id: $0.id, name: name) }
+                library.note(atPath: name).map { (id: $0.id, name: name) }
             }.filter { library.editor(showing: $0.id) == nil }
             guard !notes.isEmpty else { continue }
             let window = index == 0 ? firstWindow : makeWindow(sidebar: firstWindow.state.isSidebarVisible)

@@ -104,6 +104,8 @@ private struct TabStrip: View {
                     .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
                         state.strip = TabStripGeometry(frame: frame, tabWidth: layout.tabWidth, scrollOffset: scrollOffset)
                     }
+                    .onAppear { state.secondaryClickHandlers["tabs"] = menuItems(at:) }
+                    .onDisappear { state.secondaryClickHandlers["tabs"] = nil }
                     .onChange(of: state.selectedTab?.id, initial: true) { _, id in
                         guard let id, layout.scrolls else { return }
                         withAnimation(.smooth(duration: 0.25)) { scroller.scrollTo(id) }
@@ -160,7 +162,6 @@ private struct TabStrip: View {
             }
         }
         .gesture(dragGesture(tab, at: index, layout: layout))
-        .contextMenu { contextMenu(for: tab) }
     }
 
     // MARK: Dragging
@@ -237,33 +238,43 @@ private struct TabStrip: View {
 
     // MARK: Menu
 
-    @ViewBuilder
-    private func contextMenu(for tab: PageTab) -> some View {
-        Button("Close Tab") { page.close(tab) }
-        Button("Close Other Tabs") { page.closeOtherTabs(than: tab) }
-            .disabled(page.tabs.count < 2)
-        Button("Close Tabs to the Right") { page.closeTabs(after: tab) }
-            .disabled(page.tabs.last === tab)
-        Divider()
+    /// A right-click on a tab: our menu for it.
+    private func menuItems(at point: CGPoint) -> [ChromeMenuItem]? {
+        guard showsTabs, let strip = state.strip, strip.frame.contains(point), strip.tabWidth > 0 else { return nil }
+        let index = Int((point.x - strip.frame.minX + strip.scrollOffset) / strip.tabWidth)
+        guard state.tabs.indices.contains(index) else { return nil }
+        return menuItems(for: state.tabs[index])
+    }
+
+    private func menuItems(for tab: PageTab) -> [ChromeMenuItem] {
+        var items: [ChromeMenuItem] = [
+            .action("Close Tab", systemImage: "xmark", detail: "⌘W") { page.close(tab) },
+            .action("Close Other Tabs", enabled: page.tabs.count > 1) { page.closeOtherTabs(than: tab) },
+            .action("Close Tabs to the Right", enabled: page.tabs.last !== tab) { page.closeTabs(after: tab) },
+            .divider,
+        ]
         if tab.isUntouched {
-            Button("Keep Open") { tab.isEdited = true }
+            items.append(.action("Keep Open", systemImage: "pin") { tab.isEdited = true })
         }
-        Button("Move Tab to New Window") { workspace.moveToNewWindow(tab) }
-            .disabled(page.tabs.count < 2)
+        items.append(.action("Move Tab to New Window", systemImage: "macwindow.badge.plus", enabled: page.tabs.count > 1) {
+            workspace.moveToNewWindow(tab)
+        })
         if tab.isLibraryTab, let note = tab.note, !note.isBlankDraft {
-            Divider()
+            items.append(.divider)
             if note.isLocked {
-                Button("Remove Lock") { workspace.removeLock(note.id) }
-                    .disabled(note.isSealed || workspace.library.lockScope == .library)
+                items.append(.action("Remove Lock", systemImage: "lock.open",
+                                     enabled: !note.isSealed && workspace.library.lockScope != .library) { workspace.removeLock(note.id) })
             } else {
-                Button("Lock Note") { workspace.lockNote(note.id, in: state) }
+                items.append(.action("Lock Note", systemImage: "lock") { workspace.lockNote(note.id, in: state) })
             }
         }
-        Divider()
-        Button("Show in Finder") {
-            if let url = tab.file?.url ?? tab.note?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-        }
-        .disabled(tab.file == nil && tab.note?.fileURL == nil)
+        items += [
+            .divider,
+            .action("Show in Finder", systemImage: "folder", enabled: tab.file != nil || tab.note?.fileURL != nil) {
+                if let url = tab.file?.url ?? tab.note?.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            },
+        ]
+        return items
     }
 }
 
@@ -325,7 +336,7 @@ private struct TabItem: View {
             }
         .opacity(isLifted ? 0.35 : 1)
         .contentShape(Rectangle())
-        .help(tab.file?.url.path ?? tab.title)
+        .help(tab.toolTip)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -453,11 +464,13 @@ final class TabDragPreview {
     static let shared = TabDragPreview()
     private var panel: NSPanel?
 
-    func show(title: String, italic: Bool, palette: EditorPalette, at point: NSPoint) {
+    /// Shows the chip under the pointer, or moves it there. `systemImage`: a
+    /// glyph before the title (a sidebar row being dragged).
+    func show(title: String, italic: Bool, systemImage: String? = nil, palette: EditorPalette, at point: NSPoint) {
         let size = NSSize(width: 200, height: 36)
         let panel = self.panel ?? makePanel(size: size)
         self.panel = panel
-        let chip = TabChip(title: title, italic: italic, palette: palette)
+        let chip = TabChip(title: title, italic: italic, systemImage: systemImage, palette: palette)
             .frame(width: size.width - 16, height: size.height - 8)
             .padding(4)
             .padding(.horizontal, 4)
@@ -490,14 +503,22 @@ final class TabDragPreview {
     private struct TabChip: View {
         let title: String
         let italic: Bool
+        var systemImage: String?
         let palette: EditorPalette
 
         var body: some View {
-            Text(title)
-                .font(.system(size: 12.5, weight: .medium))
-                .italic(italic)
-                .foregroundStyle(Color(nsColor: palette.text))
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(nsColor: palette.quote))
+                }
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .italic(italic)
+                    .foregroundStyle(Color(nsColor: palette.text))
+                    .lineLimit(1)
+            }
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .background {
@@ -516,4 +537,8 @@ final class TabDragPreview {
 extension EditorPalette {
     /// The tab bar and the sidebar: one band of the page's paper, a shade darker.
     var chrome: NSColor { sidebarBackground }
+
+    /// Under the pointer, in lists and panels: barely there, so a row is
+    /// found, not lit.
+    var hoverFill: Color { Color(nsColor: text).opacity(0.045) }
 }

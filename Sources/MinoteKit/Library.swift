@@ -29,6 +29,13 @@ extension NoteEditor {
 public protocol LibraryWatching: AnyObject {
     func start(onChange: @escaping @MainActor () -> Void)
     func stop()
+    /// The library's folders now (the library folder first): a watcher that
+    /// can't see into folders below the one it watches follows each of them.
+    func watch(folders: [URL])
+}
+
+extension LibraryWatching {
+    public func watch(folders: [URL]) {}
 }
 
 public struct LibraryTiming: Sendable {
@@ -59,6 +66,8 @@ public struct LibraryTiming: Sendable {
 public struct TrashReceipt: Sendable {
     public let trashedURL: URL
     public let originalName: String
+    /// The library folder it was in; it goes back there.
+    public let folder: FolderPath
 }
 
 /// A problem worth telling the user about.
@@ -80,6 +89,18 @@ public struct LibraryError: Identifiable, Sendable {
 public final class Library {
     /// Drafts first, then newest first.
     public private(set) var notes: [Note] = []
+    /// Every folder under the library folder, empty ones too (not the
+    /// library folder itself).
+    public internal(set) var folders: [FolderPath] = []
+    /// What each folder remembers about its order (the library folder's
+    /// under `.root`), from its `.minote-folder` file.
+    public internal(set) var folderSettings: [FolderPath: FolderSettings] = [:]
+    /// Folders whose settings file this build can't read: left alone until
+    /// the writer orders that folder again.
+    @ObservationIgnored var unreadableSettings: Set<FolderPath> = []
+    /// Told when folders are renamed, moved or removed, or notes moved, so the
+    /// app can follow (tabs kept by path, folders kept closed).
+    @ObservationIgnored public var organisationHandler: ((OrganisationChange) -> Void)?
     public var selectedID: Note.ID? {
         didSet {
             if oldValue != selectedID { selectionDidChange(from: oldValue) }
@@ -147,15 +168,15 @@ public final class Library {
     /// changed), so the change isn't taken for a request to show a note.
     @ObservationIgnored private var isSyncingSelection = false
 
-    @ObservationIgnored private var store: NoteFileStore
+    @ObservationIgnored private(set) var store: NoteFileStore
     @ObservationIgnored private var watcher: (any LibraryWatching)?
     @ObservationIgnored private let timing: LibraryTiming
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let logger = Logger(subsystem: "com.mlutfullaev.minote", category: "Library")
+    @ObservationIgnored let logger = Logger(subsystem: "com.mlutfullaev.minote", category: "Library")
 
-    @ObservationIgnored private var saveTimers: [Note.ID: Task<Void, Never>] = [:]
+    @ObservationIgnored private(set) var saveTimers: [Note.ID: Task<Void, Never>] = [:]
     @ObservationIgnored private var firstUnsavedEdit: [Note.ID: ContinuousClock.Instant] = [:]
-    @ObservationIgnored private var operations: [Note.ID: (token: UUID, done: Task<Void, Never>)] = [:]
+    @ObservationIgnored private(set) var operations: [Note.ID: (token: UUID, done: Task<Void, Never>)] = [:]
     @ObservationIgnored private var inFlight = 0
     /// Bumped whenever a disk operation starts or ends, so a scan that raced
     /// with our own writes is thrown away instead of misread as outside changes.
@@ -211,6 +232,12 @@ public final class Library {
         notes.first { $0.id == id }
     }
 
+    /// The note whose file is at `path` in the library ("Work/Ideas.md"). A
+    /// bare name, as earlier builds saved it, is a note at the top.
+    public func note(atPath path: String) -> Note? {
+        notes.first { $0.relativePath == path }
+    }
+
     // MARK: Loading
 
     /// Reads the folder, restores the last opened note and starts watching for changes.
@@ -233,8 +260,7 @@ public final class Library {
                 )
             }
         } else {
-            let lastName = defaults.string(forKey: Self.selectionKey)
-            if let restored = notes.first(where: { $0.fileURL?.lastPathComponent == lastName }) {
+            if let lastPath = defaults.string(forKey: Self.selectionKey), let restored = note(atPath: lastPath) {
                 selectedID = restored.id
             } else if let first = notes.first {
                 selectedID = first.id
@@ -257,7 +283,7 @@ public final class Library {
         var shown: [(editor: any NoteEditor, name: String?)] = []
         if isLoaded {
             await saveNow()
-            shown = liveEditors.map { ($0, $0.displayedNoteID.flatMap(note(with:))?.fileURL?.lastPathComponent) }
+            shown = liveEditors.map { ($0, $0.displayedNoteID.flatMap(note(with:))?.relativePath) }
             for (editor, _) in shown { show(nil, in: editor) }
             selectedID = nil
             await waitUntilIdle()
@@ -297,7 +323,7 @@ public final class Library {
         await load()
         let loaded = selectedID
         for (editor, name) in shown where editors.contains(where: { $0.value === editor }) {
-            if let name, let note = notes.first(where: { $0.fileURL?.lastPathComponent == name }), show(note.id, in: editor) {
+            if let name, let note = note(atPath: name), show(note.id, in: editor) {
                 continue
             }
             if editor === shown.last?.editor, let loaded, show(loaded, in: editor) { continue }
@@ -383,25 +409,26 @@ public final class Library {
 
     /// Starts a new draft at the top and focuses the editor. Nothing is written
     /// until the draft has text; reuses the current draft if it's still empty.
-    public func newNote(locked: Bool = false) {
+    public func newNote(locked: Bool = false, in folder: FolderPath = .root) {
         guard !isSingleFile, !isLibraryLocked else { return }
         searchText = ""
         if let current = selectedNote, current.isDraft, current.isLocked == (locked || lockScope == .library),
            editorText(of: current)?.isBlank == true {
+            current.folder = folder
             editor?.focus()
             return
         }
-        open(insertDraft(locked: locked).id)
+        open(insertDraft(locked: locked, in: folder).id)
         editor?.focus()
     }
 
     /// A new, empty draft at the top of the list, not shown anywhere yet: for
     /// an editor of its own (File ▸ New Tab). None while the whole library is
     /// locked: a note written behind the lock screen would have no key.
-    public func makeDraft(locked: Bool = false) -> Note.ID? {
+    public func makeDraft(locked: Bool = false, in folder: FolderPath = .root) -> Note.ID? {
         guard !isSingleFile, !isLibraryLocked else { return nil }
         searchText = ""
-        return insertDraft(locked: locked).id
+        return insertDraft(locked: locked, in: folder).id
     }
 
     /// Opens a note on the user's behalf: through `openHandler` when there is
@@ -431,7 +458,7 @@ public final class Library {
             }
             do {
                 guard let trashed = try await self.store.trash(url) else { return nil }
-                return TrashReceipt(trashedURL: trashed, originalName: url.lastPathComponent)
+                return TrashReceipt(trashedURL: trashed, originalName: url.lastPathComponent, folder: note.folder)
             } catch {
                 self.report("Couldn't move “\(note.title)” to the Trash", error)
                 self.notes.append(note)
@@ -456,7 +483,7 @@ public final class Library {
     public func restore(_ receipt: TrashReceipt) async {
         let url: URL
         do {
-            url = try await store.restore(receipt.trashedURL, preferredName: receipt.originalName)
+            url = try await store.restore(receipt.trashedURL, preferredName: receipt.originalName, in: receipt.folder)
         } catch {
             report("Couldn't put the note back", error)
             return
@@ -484,8 +511,10 @@ public final class Library {
         await enqueue(id) { [weak self] in
             guard let self, let url = note.fileURL else { return }
             do {
+                let oldStem = note.fileStem
                 let renamed = try await self.store.renameManually(url, to: stem)
                 note.fileURL = renamed
+                self.renameOrderKey(in: note.folder, from: oldStem, to: note.fileStem)
                 note.autoNameTag = nil
                 note.refreshAutoNamed()
                 note.updateDerived()
@@ -946,7 +975,9 @@ public final class Library {
     /// Points a note at the file it was converted into.
     private func moved(_ note: Note, to saved: SavedFile, revision: Int) {
         let wasAutoNamed = note.isAutoNamed
+        let oldStem = note.fileStem
         note.fileURL = saved.url
+        renameOrderKey(in: note.folder, from: oldStem, to: note.fileStem)
         note.stamp = saved.stamp
         note.modified = saved.stamp.modified
         if wasAutoNamed { note.autoNameTag = note.fileStem }
@@ -1111,21 +1142,52 @@ public final class Library {
 
     // MARK: Links
 
-    /// The note a relative link points to: `Other note.md`, `Other note`, or
-    /// `../Notes/Other note.md` all find the note whose file is "Other note.md".
-    public func note(linkedAs path: String) -> Note? {
+    /// The note a relative link points to. Read as a real path from the
+    /// linking note's folder first (`Sub/Note.md`, `../Note.md`); when nothing
+    /// is there, by name anywhere, as links written before folders expect:
+    /// `Other note.md`, `Other note` or `../Notes/Other note.md` find the note
+    /// whose file is "Other note.md", preferring the linking note's folder,
+    /// then the one nearest the top.
+    public func note(linkedAs path: String, from origin: Note? = nil) -> Note? {
         let name = (path as NSString).lastPathComponent
         guard !name.isEmpty else { return nil }
         let stem = NoteNaming.isNoteFile(URL(fileURLWithPath: name)) ? (name as NSString).deletingPathExtension : name
-        return notes.first { $0.fileURL?.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
-            ?? notes.first { $0.fileStem?.caseInsensitiveCompare(stem) == .orderedSame }
-            ?? notes.first { $0.title.caseInsensitiveCompare(stem) == .orderedSame }
+        let base = origin?.folder ?? .root
+
+        // The path itself, from the linking note's folder.
+        var components = base.components
+        var escaped = false
+        for part in (path as NSString).deletingLastPathComponent.split(separator: "/") {
+            switch part {
+            case ".": continue
+            case "..": if components.isEmpty { escaped = true } else { components.removeLast() }
+            default: components.append(String(part))
+            }
+        }
+        if !escaped {
+            let folder = FolderPath(components)
+            let inFolder = notes.filter { $0.folder.components.map { $0.lowercased() } == folder.components.map { $0.lowercased() } }
+            if let found = inFolder.first(where: { $0.fileURL?.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame })
+                ?? inFolder.first(where: { $0.fileStem?.caseInsensitiveCompare(stem) == .orderedSame }) {
+                return found
+            }
+        }
+
+        // By name, anywhere.
+        let nearest: (Note, Note) -> Bool = { a, b in
+            let aHere = a.folder == base, bHere = b.folder == base
+            if aHere != bHere { return aHere }
+            return a.folder.depth < b.folder.depth
+        }
+        return notes.filter { $0.fileURL?.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }.min(by: nearest)
+            ?? notes.filter { $0.fileStem?.caseInsensitiveCompare(stem) == .orderedSame }.min(by: nearest)
+            ?? notes.filter { $0.title.caseInsensitiveCompare(stem) == .orderedSame }.min(by: nearest)
     }
 
-    /// Follows a relative link: shows the note it names, or returns the file,
-    /// next to the open note, for another app to open.
+    /// Follows a relative link in the open note: shows the note it names, or
+    /// returns the file, next to the open note, for another app to open.
     public func followLink(to path: String) -> URL? {
-        if let note = note(linkedAs: path) {
+        if let note = note(linkedAs: path, from: selectedNote) {
             open(note.id)
             return nil
         }
@@ -1189,10 +1251,10 @@ public final class Library {
         self.editor = editor
     }
 
-    private func persistSelection() {
+    func persistSelection() {
         // The library's last opened note isn't an opened file's business.
         guard !isSingleFile else { return }
-        defaults.set(selectedNote?.fileURL?.lastPathComponent, forKey: Self.selectionKey)
+        defaults.set(selectedNote?.relativePath, forKey: Self.selectionKey)
     }
 
     /// Wraps up a note the user just left (no editor shows it any more):
@@ -1230,7 +1292,7 @@ public final class Library {
 
     // MARK: Saving
 
-    private enum RenamePolicy {
+    enum RenamePolicy {
         /// Rename only if the caret isn't on the title line (user isn't mid-title).
         case whenNotEditingTitle
         case always
@@ -1259,7 +1321,7 @@ public final class Library {
         }
     }
 
-    private func performSave(_ note: Note, rename: RenamePolicy) async {
+    func performSave(_ note: Note, rename: RenamePolicy) async {
         guard contains(note) else { return }
         saveTimers.removeValue(forKey: note.id)?.cancel()
         firstUnsavedEdit[note.id] = nil
@@ -1293,7 +1355,7 @@ public final class Library {
             // note's sealed from the first byte.
             do {
                 let title = note.text.map { NoteNaming.title(of: $0.prefix(NoteNaming.prefixLength)) } ?? note.title
-                let saved = try await store.create(payload, base: NoteNaming.fileStem(forTitle: title))
+                let saved = try await store.create(payload, base: NoteNaming.fileStem(forTitle: title), in: note.folder)
                 note.fileURL = saved.url
                 note.stamp = saved.stamp
                 note.modified = saved.stamp.modified
@@ -1367,6 +1429,7 @@ public final class Library {
             let newURL = try await store.rename(url, toBase: desired)
             guard newURL != url else { return }
             note.fileURL = newURL
+            renameOrderKey(in: note.folder, from: stem, to: note.fileStem)
             note.autoNameTag = note.fileStem
             note.refreshAutoNamed()
             if selectedID == note.id { persistSelection() }
@@ -1407,6 +1470,28 @@ public final class Library {
             return result
         }
         operations[id] = (token, Task { _ = await task.value })
+        return task
+    }
+
+    /// Runs `operation` after every earlier operation on any of these notes,
+    /// holding all of them until it's done: nothing is written to a note
+    /// while its folder moves.
+    @discardableResult
+    func enqueue<T: Sendable>(holding ids: [Note.ID], _ operation: @escaping @MainActor () async -> T) -> Task<T, Never> {
+        let previous = ids.compactMap { operations[$0]?.done }
+        let token = UUID()
+        beginDiskWork()
+        let task = Task { @MainActor [weak self] () -> T in
+            for earlier in previous { await earlier.value }
+            let result = await operation()
+            if let self {
+                for id in ids where self.operations[id]?.token == token { self.operations[id] = nil }
+                self.endDiskWork()
+            }
+            return result
+        }
+        let done = Task { _ = await task.value }
+        for id in ids { operations[id] = (token, done) }
         return task
     }
 
@@ -1454,9 +1539,9 @@ public final class Library {
         }
         let generation = mutationCounter
         let vaultRead = await store.readVault()
-        let files: [ScannedFile]
+        let files: ScanResult
         do {
-            files = try await store.scan(known: knownStamps(), sealer: sealer)
+            files = try await store.scanTree(known: knownStamps(), sealer: sealer)
         } catch {
             logger.error("Scan failed: \(error.localizedDescription, privacy: .public)")
             return
@@ -1474,12 +1559,12 @@ public final class Library {
 
     /// Waits for our own disk operations to finish, then rescans; retries if
     /// another operation slipped in while scanning.
-    private func settledRescan() async {
+    func settledRescan() async {
         for _ in 0..<5 {
             while let pending = operations.values.first?.done { await pending.value }
             let generation = mutationCounter
             let vaultRead = await store.readVault()
-            guard let files = try? await store.scan(known: knownStamps(), sealer: sealer) else { return }
+            guard let files = try? await store.scanTree(known: knownStamps(), sealer: sealer) else { return }
             if inFlight == 0 && generation == mutationCounter {
                 reconcile(files)
                 reconcileVault(vaultRead)
@@ -1497,7 +1582,23 @@ public final class Library {
         return stamps
     }
 
-    private func reconcile(_ files: [ScannedFile]) {
+    private func reconcile(_ scan: ScanResult) {
+        let files = scan.files
+        let scannedFolders = scan.folders.map(\.path).sorted()
+        if scannedFolders != folders { folders = scannedFolders }
+        // Every time: folder commands change `folders` themselves, and a
+        // watcher that can only see one folder must follow each of them.
+        watcher?.watch(folders: [store.directory] + scannedFolders.map(store.folderURL))
+        var settings: [FolderPath: FolderSettings] = [:]
+        var unreadable = Set<FolderPath>()
+        for (folder, read) in scan.settings {
+            switch read {
+            case .found(let found): if !found.isEmpty { settings[folder] = found }
+            case .unreadable: unreadable.insert(folder)
+            }
+        }
+        if settings != folderSettings { folderSettings = settings }
+        unreadableSettings = unreadable
         var byURL: [URL: Note] = [:]
         for note in notes {
             if let url = note.fileURL { byURL[url] = note }
@@ -1515,6 +1616,8 @@ public final class Library {
                 note.autoNameTag = file.autoNameTag
                 note.refreshAutoNamed()
             }
+            // The file says where the note is.
+            if note.folder != file.folder { note.folder = file.folder }
             guard let content = file.content else { continue }
             note.stamp = file.stamp
             if case .locked(let record, _) = content { note.lockRecord = record }
@@ -1559,6 +1662,14 @@ public final class Library {
                 adopt(added.remove(at: index), into: note)
                 continue
             }
+            // Moved to another folder (by Finder, another app or device): the
+            // same file under the same name, unchanged. Only when exactly one
+            // file fits; otherwise it's a note removed and another added.
+            let moves = added.indices.filter { isMove(of: note, to: added[$0]) }
+            if moves.count == 1 {
+                adopt(added.remove(at: moves[0]), into: note)
+                continue
+            }
             if note.hasUnsavedChanges {
                 // Deleted elsewhere while the user was typing: keep the text and
                 // write it again as a new file rather than lose it (sealed, if
@@ -1586,14 +1697,14 @@ public final class Library {
 
     // MARK: Helpers
 
-    private func contains(_ note: Note) -> Bool {
+    func contains(_ note: Note) -> Bool {
         notes.contains { $0 === note }
     }
 
     /// Removes a note from the list. An editor showing it goes away or shows
     /// its neighbor; if it was selected without an editor, the neighbor is
     /// selected. With no notes left, a new draft takes its place.
-    private func remove(_ note: Note) {
+    func remove(_ note: Note) {
         let visible = visibleNotes
         var neighbor: Note?
         if let index = visible.firstIndex(where: { $0 === note }) {
@@ -1636,8 +1747,8 @@ public final class Library {
         editor?.focus()
     }
 
-    private func insertDraft(locked: Bool = false) -> Note {
-        let note = Note(draftCreatedAt: Date())
+    private func insertDraft(locked: Bool = false, in folder: FolderPath = .root) -> Note {
+        let note = Note(draftCreatedAt: Date(), in: folder)
         if (locked && hasPassword) || lockScope == .library {
             note.lockOnCreate = true
             // Behind the lock: nothing can be typed into it until it's unlocked.
@@ -1651,8 +1762,18 @@ public final class Library {
     /// unlocked elsewhere: same name, one plain, one locked.
     private func isConversion(of old: URL, to new: URL?) -> Bool {
         guard let new else { return false }
-        return NoteNaming.stemsMatch(old.deletingPathExtension().lastPathComponent, new.deletingPathExtension().lastPathComponent)
+        return old.deletingLastPathComponent() == new.deletingLastPathComponent()
+            && NoteNaming.stemsMatch(old.deletingPathExtension().lastPathComponent, new.deletingPathExtension().lastPathComponent)
             && NoteNaming.isLockedFile(old) != NoteNaming.isLockedFile(new)
+    }
+
+    /// Whether `scanned` is `note`'s file, moved to another folder elsewhere:
+    /// the same name and the same size and modification date.
+    private func isMove(of note: Note, to scanned: Note) -> Bool {
+        guard let old = note.fileURL, let new = scanned.fileURL, let stamp = note.stamp else { return false }
+        return note.folder != scanned.folder
+            && old.lastPathComponent == new.lastPathComponent
+            && scanned.stamp == stamp
     }
 
     /// Moves `note` onto the file another device converted it into. Edits not
@@ -1661,8 +1782,10 @@ public final class Library {
     private func adopt(_ scanned: Note, into note: Note) {
         let wasAutoNamed = note.isAutoNamed
         note.fileURL = scanned.fileURL
+        note.folder = scanned.folder
         note.stamp = scanned.stamp
         note.modified = scanned.modified
+        note.created = scanned.created
         note.autoNameTag = scanned.autoNameTag ?? (wasAutoNamed ? scanned.fileStem : nil)
         note.lockRecord = scanned.lockRecord
         note.refreshAutoNamed()
@@ -1673,9 +1796,12 @@ public final class Library {
         }
         switch scanned.content {
         case .plain(let text):
+            // Moved, or unlocked elsewhere with the same text: the editor
+            // keeps its caret, scroll and undo.
+            let changed = note.text != text
             note.content = .plain(text)
             note.updateDerived()
-            editor(showing: note.id)?.display(note)
+            if changed { editor(showing: note.id)?.display(note) }
         case .sealed:
             seal(note, pending: nil)
         }
@@ -1692,8 +1818,8 @@ public final class Library {
         let sorted = notes.sorted { a, b in
             if a.isDraft != b.isDraft { return a.isDraft }
             if a.modified != b.modified { return a.modified > b.modified }
-            let nameA = a.fileURL?.lastPathComponent ?? ""
-            let nameB = b.fileURL?.lastPathComponent ?? ""
+            let nameA = a.relativePath ?? ""
+            let nameB = b.relativePath ?? ""
             return nameA.localizedStandardCompare(nameB) == .orderedAscending
         }
         if !sorted.elementsEqual(notes, by: ===) { notes = sorted }
@@ -1701,7 +1827,7 @@ public final class Library {
 
     /// Copies the live text of the editor showing the note, if it has edits.
     /// Never from a sealed note's editor: it shows nothing, which isn't the text.
-    private func captureEditorText(of note: Note) {
+    func captureEditorText(of note: Note) {
         guard note.hasUnsavedChanges, !note.isSealed, let editor = editor(showing: note.id) else { return }
         note.content = .plain(editor.currentText())
     }
@@ -1725,7 +1851,7 @@ public final class Library {
         #endif
     }
 
-    private func report(_ title: String, _ error: any Error) {
+    func report(_ title: String, _ error: any Error) {
         logger.error("\(title, privacy: .public): \(error.localizedDescription, privacy: .public)")
         presentedError = LibraryError(title: title, message: error.localizedDescription)
     }

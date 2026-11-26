@@ -92,6 +92,23 @@ struct AppCommands: Commands {
             .disabled(frontLibraryNote?.isDraft ?? true || frontLibraryNote?.isSealed == true || library.isLibraryLocked)
             Button("Rename…") { frontWindow?.renaming = frontLibraryNote }
                 .disabled(frontLibraryNote?.isBlankDraft ?? true || library.isLibraryLocked)
+            Button("New Folder") { workspace.newFolder() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(library.isLibraryLocked)
+            if let note = frontLibraryNote, !library.isLibraryLocked {
+                MoveToMenu(library: library, current: note.folder) { folder in
+                    Task { await library.moveNote(note.id, to: folder, undoManager: NSApp.keyWindow?.undoManager) }
+                } newFolder: {
+                    Task { @MainActor in
+                        guard let folder = await library.newFolder(in: note.folder) else { return }
+                        await library.moveNote(note.id, to: folder)
+                        workspace.sidebar.reveal(folder)
+                        frontWindow?.renamingFolder = folder
+                    }
+                }
+            } else {
+                Menu("Move to") {}.disabled(true)
+            }
             Divider()
             Button(frontLibraryNote?.isLocked == true ? "Remove Lock" : "Lock Note") {
                 guard let note = frontLibraryNote else { return }
@@ -116,11 +133,11 @@ struct AppCommands: Commands {
             Divider()
             // ⌘⌫ only while the list has focus; in the editor it deletes to the start of the line.
             Button("Move to Trash") {
-                guard let id = frontLibraryNote?.id else { return }
-                library.moveToTrash(id, undoManager: NSApp.keyWindow?.undoManager, actionName: "Move to Trash")
+                // The sidebar decides: what's picked, the folder it's on, or the open note.
+                frontWindow?.sidebarDeleteRequest += 1
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!(frontWindow?.isSidebarFocused ?? false) || frontLibraryNote == nil || library.isLibraryLocked)
+            .disabled(!(frontWindow?.isSidebarFocused ?? false) || library.isLibraryLocked)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") {
@@ -136,14 +153,15 @@ struct AppCommands: Commands {
 
     @CommandsBuilder private var editCommands: some Commands {
         CommandGroup(after: .textEditing) {
-            Button("Search All Notes") {
-                if workspace.frontWindow == nil { workspace.showLibrary() }
-                guard let window = workspace.frontWindow?.state ?? workspace.targetWindow?.state else { return }
-                window.isSidebarVisible = true
-                window.searchFocusRequest += 1
-            }
-            .keyboardShortcut("f", modifiers: [.command, .shift])
-            .disabled(library.isLibraryLocked)
+            Button("Go to Sidebar") { workspace.focusSidebar() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(library.isLibraryLocked)
+            Button("Search…") { workspace.showSearch() }
+                .keyboardShortcut("j")
+                .disabled(library.isLibraryLocked)
+            Button("Search All Notes") { workspace.showSearch() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(library.isLibraryLocked)
         }
     }
 
@@ -219,6 +237,27 @@ struct AppCommands: Commands {
             .disabled((workspace.frontWindow?.tabs.count ?? 0) < 2)
             Button("Merge All Windows") { workspace.mergeAllWindows() }
             Divider()
+        }
+    }
+}
+
+/// File ▸ Move to: the menu bar is the system's, so this one stays a system menu.
+private struct MoveToMenu: View {
+    let library: Library
+    let current: FolderPath
+    let move: (FolderPath) -> Void
+    let newFolder: () -> Void
+
+    var body: some View {
+        Menu("Move to") {
+            Button("Notes") { move(.root) }
+                .disabled(current.isRoot)
+            ForEach(library.folders, id: \.self) { folder in
+                Button(String(repeating: "    ", count: folder.depth - 1) + (folder.name ?? "")) { move(folder) }
+                    .disabled(folder == current)
+            }
+            Divider()
+            Button("New Folder…") { newFolder() }
         }
     }
 }

@@ -66,11 +66,19 @@ final class PageTab: Identifiable {
         return note?.displayTitle ?? "New Note"
     }
 
+    /// The tab's tooltip: the title, with the folder of a note that's in one.
+    var toolTip: String {
+        if let file { return file.url.path }
+        guard let note, !note.folder.isRoot else { return title }
+        return "\(title) — \(note.folder.string)"
+    }
+
     /// Shown in italics: nobody typed in it, so the next note opened takes its place.
     var isUntouched: Bool { isLibraryTab && !isEdited }
 
-    /// Kept tabs are by file name: a renamed note (or a saved draft) changes them.
-    var fileName: String? {
-        isLibraryTab ? note?.fileURL?.lastPathComponent : nil
+    /// Kept tabs are by the file's path in the library: a renamed or moved
+    /// note (or a saved draft) changes them.
+    var relativePath: String? {
+        isLibraryTab ? note?.relativePath : nil
     }
 }

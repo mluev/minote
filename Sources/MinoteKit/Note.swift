@@ -16,6 +16,10 @@ public final class Note: Identifiable {
     public internal(set) var title: String
     public internal(set) var excerpt: String
     public internal(set) var modified: Date
+    /// When the file was made (a draft: when it was started).
+    public internal(set) var created: Date
+    /// The library folder the note is in; a draft's file will be made there.
+    public internal(set) var folder: FolderPath = .root
     /// Whether the file name follows the first line (see `NoteFileStore.autoNameAttribute`).
     public internal(set) var isAutoNamed: Bool
     /// A locked note whose text isn't in memory: the library is locked.
@@ -65,13 +69,19 @@ public final class Note: Identifiable {
     /// File name without extension, or nil for drafts.
     public var fileStem: String? { fileURL?.deletingPathExtension().lastPathComponent }
 
+    /// The file's path in the library, "Work/Ideas.md" ("Ideas.md" at the
+    /// top): what identifies the note across launches. Nil for drafts.
+    public var relativePath: String? { fileURL.map { folder.relativePath(ofFile: $0.lastPathComponent) } }
+
     /// A new, empty draft.
-    init(draftCreatedAt date: Date) {
+    init(draftCreatedAt date: Date, in folder: FolderPath = .root) {
         id = UUID()
         fileURL = nil
         title = ""
         excerpt = ""
         modified = date
+        created = date
+        self.folder = folder
         isAutoNamed = true
         content = .plain("")
     }
@@ -84,6 +94,8 @@ public final class Note: Identifiable {
         title = ""
         excerpt = ""
         modified = file.stamp.modified
+        created = file.created
+        folder = file.folder
         isAutoNamed = false
         switch content {
         case .plain(let text):

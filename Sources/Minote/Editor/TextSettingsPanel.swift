@@ -17,11 +17,9 @@ struct TextSettingsButton: View {
                 .font(.system(size: 13, weight: .medium))
         }
         .buttonStyle(ChromeButtonStyle(palette: palette, isActive: windowState.isShowingTextSettings))
+        .windowFrame { windowState.textSettingsAnchor = $0 }
         .help("Font, Size and Theme")
         .accessibilityLabel("Text Settings")
-        .popover(isPresented: $windowState.isShowingTextSettings, arrowEdge: .bottom) {
-            TextSettingsPanel()
-        }
     }
 }
 
