@@ -507,8 +507,12 @@ extension EditorCoordinator: WriterTextViewInteraction {
         }
     }
 
+    /// Whether something drawn over the page has the pointer: the outline, or
+    /// any overlay (a menu, a panel, the search palette), which covers it all.
+    /// The page then shows no I-beam and no link under the pointer.
     func isPointerOverOutline(_ windowPoint: NSPoint) -> Bool {
-        outline.containsPointer(windowPoint: windowPoint)
+        if tab?.window?.state.overlay != nil { return true }
+        return outline.containsPointer(windowPoint: windowPoint)
     }
 
     func hoverChanged(linkAt index: Int?) {

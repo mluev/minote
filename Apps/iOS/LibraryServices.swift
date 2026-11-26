@@ -10,6 +10,9 @@ enum MobileTrash {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
         try FileManager.default.moveItem(at: url, to: destination)
+        // Kept 30 days from now: a move keeps the item's old date, and a
+        // folder untouched for a month would otherwise go at the next launch.
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destination.path)
         return destination
     }
 

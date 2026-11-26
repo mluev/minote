@@ -382,8 +382,8 @@ struct PasswordSheet: View {
             }
             if let error {
                 Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let issue {
                 Text(issue)

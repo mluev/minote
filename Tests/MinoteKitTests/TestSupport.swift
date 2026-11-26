@@ -48,8 +48,26 @@ final class TemporaryLibrary: @unchecked Sendable {
         try? String(contentsOf: notes.appendingPathComponent(name), encoding: .utf8)
     }
 
+    /// Writes a note at a path in the library ("Work/Ideas.md"), making its folders.
     func write(_ text: String, to name: String) throws {
-        try text.write(to: notes.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        let url = notes.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    func makeFolder(_ path: String) throws {
+        try FileManager.default.createDirectory(at: notes.appendingPathComponent(path, isDirectory: true), withIntermediateDirectories: true)
+    }
+
+    /// Every visible file under the library folder, by its path in it.
+    var filePaths: [String] {
+        guard let walker = FileManager.default.enumerator(at: notes, includingPropertiesForKeys: [.isRegularFileKey],
+                                                          options: [.skipsHiddenFiles]) else { return [] }
+        let base = notes.standardizedFileURL.pathComponents.count
+        return walker.compactMap { $0 as? URL }
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+            .map { $0.standardizedFileURL.pathComponents.dropFirst(base).joined(separator: "/") }
+            .sorted()
     }
 }
 

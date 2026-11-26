@@ -19,12 +19,12 @@ import SwiftUI
 ///   select <location> <length>
 ///   state                     selection, caret, text and the cursor
 ///   snapshot <path>           PNG of the window contents
-///   snapshotpanel <path>      PNG of the text settings popover
+///   snapshotpanel <path>      PNG of the window with the text settings panel
 ///   snapshotwindow <title> <path>   PNG of another window, by title
 ///   config <key> <value>      showsSyntax|preview true|false
 ///   appearance dark|light     (not saved)
 ///   theme system|light|sepia|dark   (saved: put it back after)
-///   panel true|false          the text settings popover
+///   panel true|false          the text settings panel
 ///   chrome                    the front window's buttons, tab bar and sidebar: where they sit
 ///   pref <key> true|false|remove
 ///   scroll <y>
@@ -45,7 +45,7 @@ import SwiftUI
 ///   droptab <i> <x> <y>       let the front window's tab i go at a point from that window's top left
 ///                             (may be outside it), as if pulled out of the bar
 ///   sidebar true|false        show or hide the front window's sidebar
-///   mouse <x> <y> [down|up|drag|move|middle] [clicks]   a mouse event through the front window,
+///   mouse <x> <y> [down|up|drag|move|middle|right] [clicks]   a mouse event through the front window,
 ///                             at a point from its top left (the tab bar, the sidebar's header)
 ///   mousedrag <x1> <y1> <x2> <y2> [steps]   press, drag along a line, release (AppKit views only)
 ///   savetabs                  save the open tabs now and read them back
@@ -61,6 +61,21 @@ import SwiftUI
 ///   snapshotfront <path>      PNG of the front window, whatever its page shows (a locked panel too)
 ///   print                     File ▸ Print… for the tab in front
 ///   sheets                    how many sheets are attached to the front window (nested ones too)
+///   rows                      the front window's sidebar rows, one a line ("  ▾ Name 3", indented by depth)
+///   folders                   the library's folders and their settings
+///   newfolder [parent]        a new folder (in a folder path, or where File ▸ New Folder puts it)
+///   renamefolder <path>|<name>
+///   movefolder <path>|<parent>[|index]
+///   movenote <note path>|<folder>[|index]
+///   place <note or folder/ path>|<index>   reorder within its folder
+///   trashfolder <path>        (no confirmation; driver folders only)
+///   undo                      ⌘Z in the front window
+///   toggle <path>             open or close a folder in the sidebar
+///   scope <path>              Show Only This Folder ("" for the whole library)
+///   view groupby folder|date|none | previews|dates|counts|locked true|false | reset
+///   sort <folder>|manual|updated|created|title|none [reversed]
+///   overlay search|view|aa|menu <x> <y>|off   show one of our overlays (the palette, view options, "Aa", a sample menu)
+///   cursor                    the sidebar row the keyboard is on
 @MainActor
 enum DebugDriver {
     private static var timer: Timer?
@@ -190,8 +205,8 @@ enum DebugDriver {
             return snapshot(other, to: words[1])
         case "snapshotpanel":
             try? await Task.sleep(for: .milliseconds(300))
-            guard let popover = NSApp.windows.first(where: { $0.isVisible && NSStringFromClass(type(of: $0)).contains("Popover") }) else { return "error: no popover" }
-            return snapshot(popover, to: rest)
+            // The panel is drawn in the window now, not a popover of its own.
+            return snapshot(window, to: rest)
         case "outline":
             try? await Task.sleep(for: .milliseconds(150))
             return outlineState(editor)
@@ -252,6 +267,12 @@ enum DebugDriver {
     // MARK: Events
 
     /// Commands about tabs and windows; nil for the others.
+    /// A driver library note by its path ("Work/Ideas.md"), file name or title.
+    private static func driverNote(_ name: String, _ workspace: Workspace) -> Note? {
+        workspace.library.note(atPath: name)
+            ?? workspace.library.notes.first { $0.fileURL?.lastPathComponent == name || $0.title == name }
+    }
+
     private static func runTabCommand(_ command: String, _ workspace: Workspace) async -> String? {
         let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
         let rest = parts.count > 1 ? parts[1] : ""
@@ -262,7 +283,7 @@ enum DebugDriver {
             var name = rest
             let newTab = name.hasSuffix(" new")
             if newTab { name = String(name.dropLast(4)) }
-            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == name || $0.title == name }) else {
+            guard let note = driverNote(name, workspace) else {
                 return "error: no note \(name)"
             }
             workspace.open(note: note.id, newTab: newTab)
@@ -299,6 +320,9 @@ enum DebugDriver {
             case "middle":
                 await send(.otherMouseDown, at: point, in: window)
                 await send(.otherMouseUp, at: point, in: window)
+            case "right":
+                await send(.rightMouseDown, at: point, in: window)
+                await send(.rightMouseUp, at: point, in: window)
             default:
                 await send(.leftMouseDown, at: point, in: window, clicks: clicks)
                 try? await Task.sleep(for: .milliseconds(30))
@@ -349,7 +373,7 @@ enum DebugDriver {
         case "sidebar":
             workspace.targetWindow?.state.isSidebarVisible = rest == "true"
         case "trash":
-            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == rest || $0.title == rest }) else {
+            guard let note = driverNote(rest, workspace) else {
                 return "error: no note \(rest)"
             }
             await workspace.library.moveToTrash(note.id)
@@ -362,7 +386,7 @@ enum DebugDriver {
         case "lockall":
             workspace.lock.lockNow()
         case "lock", "removelock":
-            guard let note = workspace.library.notes.first(where: { $0.fileURL?.lastPathComponent == rest || $0.title == rest }) else {
+            guard let note = driverNote(rest, workspace) else {
                 return "error: no note \(rest)"
             }
             if parts[0] == "lock" { workspace.lockNote(note.id, in: workspace.targetWindow?.state) } else { workspace.removeLock(note.id) }
@@ -396,6 +420,118 @@ enum DebugDriver {
                     "  \(item.title) \(item.keyEquivalentModifierMask.rawValue >> 17) \(item.keyEquivalent)\(item.isEnabled ? "" : " (disabled)")"
                 }.joined(separator: "\n")
             }.joined(separator: "\n")
+        case "rows":
+            return describeRows(workspace)
+        case "folders":
+            let library = workspace.library
+            return ([FolderPath.root] + library.folders).map { folder in
+                let settings = library.folderSettings[folder].map { " sort \($0.sort?.rawValue ?? "-")\($0.reversed == true ? " reversed" : "") order \($0.order)" } ?? ""
+                return (folder.isRoot ? "/" : folder.string) + settings
+            }.joined(separator: "\n")
+        case "newfolder":
+            workspace.newFolder(in: rest.isEmpty ? nil : FolderPath(string: rest))
+            try? await Task.sleep(for: .milliseconds(400))
+            return describeRows(workspace)
+        case "renamefolder", "movefolder", "movenote", "place":
+            let args = rest.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard args.count >= 2 else { return "error: expected <a>|<b>" }
+            let library = workspace.library
+            let undo = workspace.targetWindow?.window.undoManager
+            switch parts[0] {
+            case "renamefolder":
+                guard await library.renameFolder(FolderPath(string: args[0]), to: args[1]) != nil else { return "error: refused" }
+            case "movefolder":
+                guard await library.moveFolder(FolderPath(string: args[0]), into: FolderPath(string: args[1]),
+                                               at: args.count > 2 ? Int(args[2]) : nil, undoManager: undo) != nil else { return "error: refused" }
+            case "movenote":
+                guard let note = driverNote(args[0], workspace) else { return "error: no note \(args[0])" }
+                guard await library.moveNote(note.id, to: FolderPath(string: args[1]), at: args.count > 2 ? Int(args[2]) : nil,
+                                             undoManager: undo) else { return "error: refused" }
+            default:
+                guard let index = Int(args[1]) else { return "error: index" }
+                let child: FolderChild
+                if args[0].hasSuffix("/") {
+                    child = .folder(FolderPath(string: args[0]))
+                } else if let note = driverNote(args[0], workspace) {
+                    child = .note(note)
+                } else {
+                    return "error: no note \(args[0])"
+                }
+                let parent: FolderPath = switch child {
+                case .folder(let path): path.parent ?? .root
+                case .note(let note): note.folder
+                }
+                await library.place(child, in: parent, at: index, undoManager: undo)
+            }
+            await library.waitUntilIdle()
+            return describeRows(workspace)
+        case "trashfolder":
+            guard await workspace.library.trashFolder(FolderPath(string: rest), undoManager: workspace.targetWindow?.window.undoManager) != nil
+            else { return "error: refused" }
+            return describeRows(workspace)
+        case "undo":
+            guard let undo = workspace.targetWindow?.window.undoManager else { return "error: no undo manager" }
+            guard undo.canUndo else { return "error: nothing to undo (level \(undo.groupingLevel))" }
+            undo.undo()
+            try? await Task.sleep(for: .milliseconds(300))
+            await workspace.library.waitUntilIdle()
+            return describeRows(workspace)
+        case "toggle":
+            workspace.sidebar.toggle(FolderPath(string: rest))
+            return describeRows(workspace)
+        case "scope":
+            workspace.targetWindow?.state.scope = FolderPath(string: rest)
+            return describeRows(workspace)
+        case "overlay":
+            // overlay search|view|aa|menu <x> <y>|off: what shows above the window.
+            guard let state = workspace.targetWindow?.state else { return "error: no window" }
+            let words = rest.split(separator: " ").map(String.init)
+            switch words.first ?? "" {
+            case "search": state.present(.search)
+            case "view": state.present(.viewOptions(anchor: CGRect(x: 230, y: 92, width: 26, height: 26)))
+            case "aa": state.isShowingTextSettings = true
+            case "menu":
+                let x = words.count > 1 ? Double(words[1]) ?? 100 : 100, y = words.count > 2 ? Double(words[2]) ?? 100 : 100
+                state.present(.menu(ChromeMenu(items: [
+                    .action("Open in New Tab", systemImage: "plus.square.on.square") {},
+                    .divider,
+                    .submenu("Move to", systemImage: "folder", [.action("Notes", checked: true) {}, .action("Work") {}]),
+                    .action("Move to Trash", systemImage: "trash") {},
+                ]), at: CGPoint(x: x, y: y)))
+            default: state.dismissOverlay()
+            }
+            try? await Task.sleep(for: .milliseconds(450))
+            return "overlay \(state.overlay.map { "\($0)" } ?? "none")"
+        case "cursor":
+            return "cursor \(workspace.targetWindow?.state.sidebarCursor ?? "-")"
+        case "view":
+            let args = rest.split(separator: " ").map(String.init)
+            let preferences = workspace.sidebar
+            switch (args.first ?? "", args.count > 1 ? args[1] : "") {
+            case ("groupby", let value):
+                guard let grouping = LibraryView.Grouping(rawValue: value) else { return "error: groupby folder|date|none" }
+                preferences.view.groupBy = grouping
+            case ("dates", let value): preferences.view.showsDates = value == "true"
+            case ("counts", let value): preferences.view.showsCounts = value == "true"
+            case ("locked", let value): preferences.view.lockedOnly = value == "true"
+            case ("reset", _): preferences.view = .standard
+            default: return "error: view groupby|dates|counts|locked|reset"
+            }
+            return describeRows(workspace)
+        case "sort":
+            let args = rest.split(separator: "|").map(String.init)
+            guard args.count == 2 else { return "error: sort <folder>|<sort> [reversed]" }
+            let words = args[1].split(separator: " ").map(String.init)
+            let folder = FolderPath(string: args[0])
+            if words.first == "none" {
+                workspace.library.setSort(nil, for: folder)
+            } else if let sort = words.first.flatMap(NoteSort.init(rawValue:)) {
+                workspace.library.setSort(SortOrder(sort, reversed: words.contains("reversed")), for: folder)
+            } else {
+                return "error: unknown sort"
+            }
+            await workspace.library.waitUntilIdle()
+            return describeRows(workspace)
         case "savetabs":
             workspace.saveTabs()
             let saved = SavedTabs.load().map { "\($0.windows)" } ?? "nothing saved"
@@ -405,6 +541,29 @@ enum DebugDriver {
         }
         try? await Task.sleep(for: .milliseconds(400))
         return workspace.describeTabs()
+    }
+
+    /// The front window's sidebar rows, as the sidebar builds them.
+    private static func describeRows(_ workspace: Workspace) -> String {
+        let library = workspace.library
+        let state = workspace.targetWindow?.state
+        let rows = SidebarRows.build(.init(notes: library.notes, folders: library.folders, settings: library.folderSettings,
+                                           view: workspace.sidebar.view, collapsed: workspace.sidebar.collapsed,
+                                           scope: state?.scope ?? .root, search: library.searchText))
+        let selected = state?.selectedTab?.noteID
+        var lines = ["scope \(state?.scope.description ?? "-") renaming \(state?.renamingFolder?.string ?? "-")"]
+        for row in rows {
+            let indent = String(repeating: "  ", count: row.depth)
+            switch row {
+            case .folder(let path, _, let count, let isOpen):
+                lines.append(indent + (isOpen ? "▾ " : "▸ ") + (path.name ?? "") + " \(count)")
+            case .note(let note, _, let label):
+                lines.append(indent + note.displayTitle + (label.map { " [\($0.string)]" } ?? "") + (note.id == selected ? " *" : ""))
+            case .section(let title):
+                lines.append("# " + title)
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// The view a driven mouse press went to: the release follows it, as in AppKit.
@@ -453,6 +612,9 @@ enum DebugDriver {
             // What a tracking area tells the views under the pointer.
             window.sendEvent(event)
             hit?.mouseMoved(with: event)
+        case .rightMouseDown, .rightMouseUp:
+            // From the queue, where the app's monitor for our menus sees it.
+            NSApp.postEvent(event, atStart: false)
         case .otherMouseUp:
             // Local monitors see events from the queue.
             NSApp.postEvent(event, atStart: false)
